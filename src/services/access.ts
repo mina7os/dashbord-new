@@ -51,7 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_change_audit_log_entity ON public.change_audit_lo
 
 let schemaEnsured = false;
 
-function roleFromEmail(email: string): AppRole {
+export function inferRoleFromEmail(email: string): AppRole {
   const normalized = email.toLowerCase();
   const managerEmail = (process.env.MANAGER_EMAIL || 'minahossam500@gmail.com').trim().toLowerCase();
   const cfoEmails = (process.env.CFO_EMAILS || '')
@@ -101,7 +101,7 @@ export async function ensureAccessSchema() {
 
 export async function getAccessContext(user: User): Promise<AccessContext> {
   const email = (user.email || '').toLowerCase();
-  const fallbackRole = roleFromEmail(email);
+  const fallbackRole = inferRoleFromEmail(email);
 
   try {
     const { data, error } = await supabaseAdmin

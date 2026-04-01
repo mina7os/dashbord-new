@@ -14,6 +14,7 @@ import { validateInfrastructure } from "./src/services/validator.ts";
 import {
   ensureAccessSchema,
   getAccessContext,
+  inferRoleFromEmail,
   listUserRoles,
   logChangeAudit,
   requireReadAllData,
@@ -210,10 +211,14 @@ async function startServer() {
       .filter((row: any) => row.sheet_id)
       .map((row: any) => {
         const roleRow = roleRows?.find((candidate: any) => candidate.user_id === row.user_id);
+        const effectiveRole =
+          row.user_id === req.user.id
+            ? req.access.role
+            : inferRoleFromEmail(String(roleRow?.email || ''));
         return {
           user_id: row.user_id,
           email: roleRow?.email || '',
-          role: roleRow?.role || 'viewer',
+          role: roleRow?.role || effectiveRole,
           sheet_id: row.sheet_id,
           url: `https://docs.google.com/spreadsheets/d/${row.sheet_id}`,
         };
@@ -296,10 +301,14 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
         .filter((row: any) => row.sheet_id)
         .map((row: any) => {
           const roleRow = roleRows?.find((candidate: any) => candidate.user_id === row.user_id);
+          const effectiveRole =
+            row.user_id === req.user.id
+              ? req.access.role
+              : inferRoleFromEmail(String(roleRow?.email || ''));
           return {
             user_id: row.user_id,
             email: roleRow?.email || '',
-            role: roleRow?.role || 'viewer',
+            role: roleRow?.role || effectiveRole,
             sheetId: row.sheet_id,
             url: `https://docs.google.com/spreadsheets/d/${row.sheet_id}`,
           };

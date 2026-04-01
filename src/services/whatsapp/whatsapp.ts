@@ -14,6 +14,7 @@ const WA_AUTH_TIMEOUT_MS = Number(process.env.WA_AUTH_TIMEOUT_MS || 60000);
 const WA_TAKEOVER_TIMEOUT_MS = Number(process.env.WA_TAKEOVER_TIMEOUT_MS || 10000);
 const WA_QR_MAX_RETRIES = Number(process.env.WA_QR_MAX_RETRIES || 5);
 const WA_STARTUP_TIMEOUT_MS = Number(process.env.WA_STARTUP_TIMEOUT_MS || 180000);
+const WA_DISCOVERY_TIMEOUT_MS = Number(process.env.WA_DISCOVERY_TIMEOUT_MS || 25000);
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
@@ -107,6 +108,20 @@ async function safeDestroyClient(client: WhatsAppClient) {
     if (client.pupBrowser) await client.pupBrowser.close().catch(() => {});
     await client.destroy().catch(() => {});
   } catch (e) {}
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function getActiveChatConfig(userId: string, chatId: string) {
@@ -488,7 +503,11 @@ export class WhatsAppManager {
   async getAvailableChats(userId: string) {
     if (this.cachedChats.has(userId)) return this.cachedChats.get(userId) || [];
     const client = this.getReadyClient(userId);
-    const chats = await client.getChats();
+    const chats = await withTimeout<any[]>(
+      client.getChats(),
+      WA_DISCOVERY_TIMEOUT_MS,
+      'Chat discovery timed out. WhatsApp is connected, but chat loading took too long. Please try again in a few seconds.'
+    );
     const mapped = await Promise.all(chats.map(async (c: any) => ({
       id: c.id._serialized, name: await resolveChatDisplayName(c), isGroup: Boolean(c.isGroup), unreadCount: Number(c.unreadCount || 0)
     })));
