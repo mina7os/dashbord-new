@@ -6,3 +6,20 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# WhatsApp session files — contain auth secrets, never commit
+.wwebjs_auth/
+.wwebjs_cache/
+
+# SQLite local DB (replaced by Supabase)
+*.db
+
+# OS artifacts
+Thumbs.db
+
+# Playwright
+.playwright-cli/
+tmp/
+.vscode/
+audit_report.md
+new info

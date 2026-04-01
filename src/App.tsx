@@ -1,0 +1,1054 @@
+import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
+import { Session } from '@supabase/supabase-js';
+import io from 'socket.io-client';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
+} from 'recharts';
+import { Search, RefreshCw, Check, X, AlertCircle, TrendingUp, Wallet, Clock, Settings, LogOut, ChevronLeft, ChevronRight, Sun, Moon } from 'lucide-react';
+import Integrations from './components/Integrations';
+import { supabase } from './lib/supabase';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface Transaction {
+  id: string;
+  created_at: string;
+  transaction_date: string;
+  amount: number;
+  currency: string;
+  sender_name: string;
+  beneficiary_name: string;
+  transaction_type: string;
+  channel: string;
+  processing_status: string;
+  reference_number: string;
+  bank_name?: string;
+}
+
+interface ReviewItem {
+  id: string;
+  created_at: string;
+  raw_text: string;
+  review_status: string;
+  suggested_data: any;
+}
+
+interface QueueItem {
+  id: string;
+  message_id: string;
+  chat_id: string;
+  processing_status: string;
+  processing_stage: string;
+  attempt_count: number;
+  last_error?: string;
+  received_at: string;
+}
+
+interface Stats {
+  total_messages: number;
+  financial_candidates: number;
+  successful_extractions: number;
+  pending_review: number;
+  duplicates: number;
+}
+
+interface DailyMetric {
+  date: string;
+  successful_extractions: number;
+}
+
+interface Toast {
+  id: string;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
+const ITEMS_PER_PAGE = 25;
+
+// ─── Toast Component ──────────────────────────────────────────────────────────
+function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: string) => void }) {
+  return (
+    <div style={{ position: 'fixed', bottom: '2rem', right: '2rem', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{
+          display: 'flex', alignItems: 'center', gap: '0.75rem',
+          padding: '12px 16px', borderRadius: '10px', minWidth: '280px', maxWidth: '400px',
+          background: t.type === 'success' ? 'rgba(34,197,94,0.1)' : t.type === 'error' ? 'rgba(239,68,68,0.1)' : 'rgba(99,102,241,0.1)',
+          border: `1px solid ${t.type === 'success' ? 'rgba(34,197,94,0.3)' : t.type === 'error' ? 'rgba(239,68,68,0.3)' : 'rgba(99,102,241,0.3)'}`,
+          backdropFilter: 'blur(12px)',
+          animation: 'fadeIn 0.2s ease-out',
+          fontSize: '0.875rem',
+          color: 'white',
+        }}>
+          {t.type === 'success' ? <Check size={16} color="#22c55e" /> : t.type === 'error' ? <AlertCircle size={16} color="#ef4444" /> : <Clock size={16} color="var(--accent)" />}
+          <span style={{ flex: 1 }}>{t.message}</span>
+          <button onClick={() => onDismiss(t.id)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: '2px' }}>
+            <X size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Review Item Modal ────────────────────────────────────────────────────────
+function ReviewModal({ item, token, onClose, onAction }: {
+  item: ReviewItem; token: string;
+  onClose: () => void;
+  onAction: (action: 'approve' | 'reject' | 'edit', corrected?: any) => void;
+}) {
+  const [editMode, setEditMode] = useState(false);
+  const [fields, setFields] = useState<any>(item.suggested_data || {});
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async (action: 'approve' | 'reject' | 'edit') => {
+    setSaving(true);
+    onAction(action, action === 'edit' ? fields : undefined);
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)'
+    }} onClick={onClose}>
+      <div style={{
+        background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '20px',
+        padding: '2rem', width: '100%', maxWidth: '560px', maxHeight: '80vh', overflowY: 'auto'
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: 0 }}>Review Transaction</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <div style={{ background: 'var(--surface2)', borderRadius: '10px', padding: '1rem', marginBottom: '1.5rem', fontSize: '0.85rem', color: 'var(--muted)', lineHeight: 1.6 }}>
+          <strong style={{ color: 'white' }}>Raw Message:</strong><br />
+          {item.raw_text || 'No raw text available'}
+        </div>
+
+        {editMode ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.5rem' }}>
+            {['amount', 'currency', 'sender_name', 'beneficiary_name', 'bank_name', 'transaction_type', 'transaction_date', 'reference_number'].map(key => (
+              <div key={key}>
+                <label style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{key.replace(/_/g, ' ')}</label>
+                <input
+                  value={fields[key] || ''}
+                  onChange={e => setFields((f: any) => ({ ...f, [key]: e.target.value }))}
+                  style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 10px', color: 'white', fontSize: '0.85rem', boxSizing: 'border-box' }}
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginBottom: '1.5rem' }}>
+            {Object.entries(item.suggested_data || {}).filter(([k]) => !['user_id', 'duplicate', 'processing_status', 'source_document_type', 'raw_text'].includes(k)).map(([k, v]) => (
+              <div key={k} style={{ background: 'var(--surface2)', padding: '8px 12px', borderRadius: '8px' }}>
+                <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase' }}>{k.replace(/_/g, ' ')}</div>
+                <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 500 }}>{String(v ?? '—')}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '0.75rem' }}>
+          {editMode ? (
+            <>
+              <button onClick={() => handleSave('edit')} disabled={saving} style={{ flex: 1, padding: '10px', background: 'var(--accent)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontWeight: 600 }}>
+                {saving ? 'Saving...' : 'Save & Approve'}
+              </button>
+              <button onClick={() => setEditMode(false)} style={{ padding: '10px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'white', cursor: 'pointer' }}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => handleSave('approve')} disabled={saving} style={{ flex: 1, padding: '10px', background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: '8px', color: '#22c55e', cursor: 'pointer', fontWeight: 600 }}>
+                <Check size={14} style={{ marginRight: '6px', display: 'inline' }} />{saving ? '...' : 'Approve'}
+              </button>
+              <button onClick={() => setEditMode(true)} style={{ flex: 1, padding: '10px', background: 'rgba(99,102,241,0.15)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '8px', color: 'var(--accent)', cursor: 'pointer', fontWeight: 600 }}>
+                Edit
+              </button>
+              <button onClick={() => handleSave('reject')} disabled={saving} style={{ padding: '10px 16px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', color: '#ef4444', cursor: 'pointer', fontWeight: 600 }}>
+                <X size={14} style={{ marginRight: '4px', display: 'inline' }} />{saving ? '...' : 'Reject'}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Inspector Modal ──────────────────────────────────────────────────────────
+function InspectorModal({ id, token, onClose }: { id: string; token: string; onClose: () => void }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`/api/pipeline/incoming/${id}`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(r => r.json())
+      .then(d => setData(d))
+      .catch(e => console.error(e))
+      .finally(() => setLoading(false));
+  }, [id, token]);
+
+  if (loading) return null; // Or a spinner
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1100, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)'
+    }} onClick={onClose}>
+      <div style={{
+        background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '24px',
+        padding: '2.5rem', width: '100%', maxWidth: '750px', maxHeight: '90vh', overflowY: 'auto',
+        boxShadow: '0 20px 50px rgba(0,0,0,0.5)'
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+          <h2 style={{ margin: 0 }}>Pipeline Inspection</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}>
+            <X size={24} />
+          </button>
+        </div>
+
+        {!data ? <div style={{ color: 'var(--red)' }}>Failed to load inspector data.</div> : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+            {/* Health Header */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem' }}>
+              <div className="stat-card glass" style={{ padding: '1rem' }}>
+                <div className="label">Status</div>
+                <div style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '0.8rem', color: data.status.includes('failed') ? 'var(--red)' : 'var(--accent)' }}>{data.status}</div>
+              </div>
+              <div className="stat-card glass" style={{ padding: '1rem' }}>
+                <div className="label">Stage</div>
+                <div style={{ fontWeight: 700, textTransform: 'uppercase', fontSize: '0.8rem' }}>{data.stage}</div>
+              </div>
+              <div className="stat-card glass" style={{ padding: '1rem' }}>
+                <div className="label">Attempts</div>
+                <div style={{ fontWeight: 700, fontSize: '0.8rem' }}>{data.attempts} / 5</div>
+              </div>
+              <div className="stat-card glass" style={{ padding: '1rem' }}>
+                <div className="label">Is Financial</div>
+                <div style={{ fontWeight: 700, color: data.is_financial ? 'var(--green)' : 'var(--muted)' }}>{data.is_financial ? 'YES' : 'NO'}</div>
+              </div>
+            </div>
+
+            {/* Error (if any) */}
+            {data.last_error && (
+              <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '12px', padding: '1rem', color: '#f87171' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '4px' }}>
+                  <AlertCircle size={14} /> <strong>Last Error</strong>
+                </div>
+                <div style={{ fontSize: '0.85rem', fontFamily: 'monospace' }}>{data.last_error}</div>
+              </div>
+            )}
+
+            {/* Raw Text */}
+            <div style={{ background: 'var(--surface2)', borderRadius: '12px', padding: '1.25rem' }}>
+              <h4 style={{ margin: '0 0 0.75rem 0', fontSize: '0.9rem' }}>Captured Payload</h4>
+              <div style={{ fontSize: '0.85rem', color: 'var(--muted)', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{data.raw_text || '(Empty)'}</div>
+            </div>
+
+            {/* Outcomes */}
+            <div>
+              <h4 style={{ margin: '0 0 1rem 0', fontSize: '0.9rem' }}>Downstream Results</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {data.results.transactions.length === 0 && data.results.reviews.length === 0 && (
+                  <div style={{ color: 'var(--muted)', fontSize: '0.85rem', fontStyle: 'italic' }}>No downstream records found (yet).</div>
+                )}
+                {data.results.transactions.map((tx: any) => (
+                  <div key={tx.record_id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', background: 'rgba(34,197,94,0.05)', border: '1px solid rgba(34,197,94,0.2)', borderRadius: '10px' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Transaction Created</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>Ref: {tx.reference_number || 'None'}</div>
+                    </div>
+                    <div style={{ fontWeight: 700, color: 'var(--green)' }}>{tx.amount} {tx.currency}</div>
+                  </div>
+                ))}
+                {data.results.reviews.map((rv: any) => (
+                  <div key={rv.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', background: 'rgba(245,158,11,0.05)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '10px' }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>Pending Review</div>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--muted)' }}>Reason: {rv.reason}</div>
+                    </div>
+                    <div style={{ fontWeight: 700, color: 'var(--yellow)' }}>Conf: {Math.round(rv.confidence * 100)}%</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const sessionRef = useRef<Session | null>(null); // Fix H5: stale closure
+  const [tab, setTab] = useState<'transactions' | 'review' | 'queue' | 'integrations'>('transactions');
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [reviewQueue, setReviewQueue] = useState<ReviewItem[]>([]);
+  const [incomingQueue, setIncomingQueue] = useState<QueueItem[]>([]);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [historicalMetrics, setHistoricalMetrics] = useState<DailyMetric[]>([]);
+  const [totals, setTotals] = useState({ egp_total: 0, usd_total: 0 });
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [search, setSearch] = useState('');
+  const [authStatus, setAuthStatus] = useState<string>('');
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [page, setPage] = useState(0);
+   const [selectedReviewItem, setSelectedReviewItem] = useState<ReviewItem | null>(null);
+  const [selectedInspectId, setSelectedInspectId] = useState<string | null>(null);
+  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const [degradedMode, setDegradedMode] = useState<boolean>(false);
+
+  // Integration States
+  const [googleConnected, setGoogleConnected] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState<string | null>(null);
+  const [whatsappStatus, setWhatsappStatus] = useState<any>('disconnected');
+  const [whatsappStatusPayload, setWhatsappStatusPayload] = useState<any>(null);
+  const [qrCode, setQrCode] = useState<string | null>(null);
+  const socketRef = useRef<any>(null);
+  const setupAttemptedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  const addToast = useCallback((message: string, type: Toast['type'] = 'info') => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 4000);
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    setToasts(prev => prev.filter(t => t.id !== id));
+  }, []);
+
+  // ─── Auth ──────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    const recoverSession = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const error = params.get('error_description') || params.get('error');
+      if (error) setAuthStatus(`Login Error: ${error}`);
+
+      try {
+        const { data: { session } } = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<any>((_, reject) => setTimeout(() => reject(new Error('Auth timeout')), 5000)),
+        ]);
+        sessionRef.current = session;
+        setSession(session);
+      } catch (err) {
+        console.error('[Auth] Session recovery failed:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    recoverSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      sessionRef.current = session;
+      setSession(session);
+
+      if (_event === 'SIGNED_IN' && session) {
+        const { provider_token, provider_refresh_token, user } = session;
+        if (provider_token || provider_refresh_token) {
+          const tokens = {
+            access_token: provider_token,
+            refresh_token: provider_refresh_token,
+            expiry_date: Date.now() + 3500 * 1000,
+          };
+
+          // Use the new robust backend endpoint
+          fetch('/api/integrations/google-tokens', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+            body: JSON.stringify({ tokens }),
+          }).then(async (res) => {
+            if (res.ok) {
+              setGoogleConnected(true);
+              // After saving tokens, trigger setup-database if sheet_id is missing and we haven't tried yet
+              if (setupAttemptedRef.current) return;
+              
+              const { data: integration } = await supabase.from('user_integrations').select('sheet_id').eq('user_id', user.id).maybeSingle();
+              if (!integration?.sheet_id || integration?.sheet_id === '1mock_sheet_id') {
+                setupAttemptedRef.current = true;
+                const setupRes = await fetch('/api/integrations/setup-database', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+                  body: JSON.stringify({ userId: user.id }),
+                });
+                const setupData = await setupRes.json();
+                if (setupRes.ok && setupData.status === 'success') {
+                  addToast('Google Sheets database ready!', 'success');
+                } else if (!setupRes.ok || setupData.error) {
+                  const isPermissionError = setupData.error?.includes('Permission') || setupData.error?.includes('Insufficient');
+                  if (isPermissionError) {
+                    addToast('Permission Denied: Please check the Drive/Sheets boxes during Sign-In!', 'error');
+                  }
+                  setupAttemptedRef.current = false;
+                }
+              }
+            }
+          }).catch(err => console.error('[Auth] Token persistence failed:', err));
+        }
+      }
+    });
+
+    return () => subscription.unsubscribe();
+    // No debug global click listener — removed M3
+  }, []);
+
+  // ─── Data Loading ──────────────────────────────────────────────────────────
+  const loadData = useCallback(async (showLoading = true) => {
+    const currentSession = sessionRef.current; // Fix H5: use ref, not stale state
+    if (!currentSession) return;
+
+    if (showLoading) setLoading(true);
+    setRefreshing(true);
+    try {
+      const { user } = currentSession;
+      const token = currentSession.access_token;
+
+      const [txRes, rqRes, iqRes, statsRes, histRes, healthRes] = await Promise.all([
+        supabase.from('transactions').select('*').eq('user_id', user.id)
+          .order('created_at', { ascending: false }).limit(200),
+        supabase.from('review_queue').select('*').eq('user_id', user.id)
+          .eq('review_status', 'pending').order('created_at', { ascending: false }),
+        fetch(`/api/pipeline/incoming?limit=100`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r => r.json()),
+        fetch(`/api/dashboard/stats?userId=${user.id}`, {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r => r.json()),
+        supabase.from('dashboard_metrics').select('date, successful_extractions')
+          .eq('user_id', user.id).order('date', { ascending: true }).limit(7),
+        fetch('/api/health').then(r => r.json()).catch(() => ({ status: 'unknown' }))
+      ]);
+
+      setTransactions(txRes.data || []);
+      setReviewQueue(rqRes.data || []);
+      setIncomingQueue(iqRes.queue || []);
+      setStats(statsRes.stats);
+      setTotals(statsRes.totals || { egp_total: 0, usd_total: 0 });
+      setHistoricalMetrics(histRes.data || []);
+      if (healthRes.status === 'degraded') setDegradedMode(true);
+    } catch (err) {
+      console.error('Load failed:', err);
+      addToast('Failed to load data. Retrying...', 'error');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, [addToast]);
+
+  // ─── Realtime Subscription (replaces 30s polling) ─────────────────────────
+  useEffect(() => {
+    if (!session?.user?.id) return;
+
+    loadData();
+    
+    const userId = session.user.id;
+
+    const channel = supabase
+      .channel(`dashboard-${userId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'transactions',
+        filter: `user_id=eq.${userId}`,
+      }, () => loadData(false))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'review_queue',
+        filter: `user_id=eq.${userId}`,
+      }, () => loadData(false))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'incoming_messages',
+        filter: `user_id=eq.${userId}`,
+      }, () => loadData(false))
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'dashboard_metrics',
+        filter: `user_id=eq.${userId}`,
+      }, () => loadData(false))
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [session?.user?.id, loadData]);
+
+  // Fallback auto-refresh in case browser Realtime misses an event.
+  useEffect(() => {
+    if (!session?.user?.id) return;
+
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        loadData(false);
+      }
+    };
+
+    const interval = window.setInterval(refreshIfVisible, 8000);
+    const onVisibilityChange = () => refreshIfVisible();
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [session?.user?.id, loadData]);
+
+  // ─── Integration Status Sync ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!session) return;
+
+    const checkIntegrations = async () => {
+      try {
+        const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` };
+        
+        // Google Status
+        const integrationRes = await fetch('/api/integrations/status', { headers: authHeaders });
+        if (integrationRes.ok) {
+          const integration = await integrationRes.json();
+          if (integration.connected) setGoogleConnected(true);
+          if (integration.sheetId) setSheetUrl(`https://docs.google.com/spreadsheets/d/${integration.sheetId}`);
+        }
+
+        // WhatsApp Status
+        const waRes = await fetch('/api/whatsapp/status', { headers: authHeaders });
+        if (waRes.ok) {
+          const waData = await waRes.json();
+          setWhatsappStatus(waData.status);
+          setWhatsappStatusPayload(waData);
+          if (waData.qr) setQrCode(waData.qr);
+        }
+      } catch (err) {
+        console.error('[App] Integration check failed:', err);
+      }
+    };
+
+    checkIntegrations();
+
+    // Socket Setup
+    const socket = io();
+    socketRef.current = socket;
+    socket.emit('join', session.user.id, session.access_token);
+
+    socket.on('whatsapp_status_update', (state: any) => {
+      console.log('[Socket] WhatsApp update:', state);
+      setWhatsappStatus(state.status);
+      setWhatsappStatusPayload(state);
+      if (state.qr) setQrCode(state.qr);
+      if (state.status === 'ready') {
+        setQrCode(null);
+        addToast('WhatsApp connected!', 'success');
+      }
+    });
+
+    return () => { socket.close(); };
+  }, [session, addToast]);
+
+  const handleConnectWhatsApp = async () => {
+    if (!session) return;
+    setWhatsappStatus('connecting');
+    try {
+      const res = await fetch('/api/whatsapp/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ userId: session.user.id }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        addToast(data.error || 'Connection failed', 'error');
+        setWhatsappStatus('disconnected');
+      }
+    } catch (err: any) {
+      addToast(err.message, 'error');
+      setWhatsappStatus('disconnected');
+    }
+  };
+
+  const handleDisconnectWhatsApp = async () => {
+    if (!session) return;
+    try {
+      const res = await fetch('/api/whatsapp/disconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ userId: session.user.id }),
+      });
+      if (res.ok) {
+        setWhatsappStatus('disconnected');
+        setWhatsappStatusPayload(null);
+        addToast('WhatsApp disconnected.', 'info');
+      }
+    } catch (err: any) {
+      addToast(err.message, 'error');
+    }
+  };
+
+  // ─── Auth Actions ──────────────────────────────────────────────────────────
+  const handleLogin = async () => {
+    setAuthStatus('Starting Google connection...');
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        queryParams: { access_type: 'offline', prompt: 'consent' },
+        redirectTo: window.location.origin,
+        scopes: [
+          'https://www.googleapis.com/auth/drive.file',
+          'https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/userinfo.profile',
+        ].join(' '),
+      },
+    });
+    if (error) {
+      const msg = error.message.includes('provider is not enabled')
+        ? '❌ Google provider not enabled in Supabase Dashboard → Authentication → Providers → Google'
+        : `OAuth Error: ${error.message}`;
+      setAuthStatus(msg);
+    } else {
+      setAuthStatus('Redirecting to Google...');
+    }
+  };
+
+  const handleLogout = () => supabase.auth.signOut();
+
+  // ─── Review Queue Actions ──────────────────────────────────────────────────
+  const handleReviewAction = useCallback(async (
+    itemId: string,
+    action: 'approve' | 'reject' | 'edit',
+    corrected?: any
+  ) => {
+    if (!session) return;
+    try {
+      const res = await fetch(`/api/review/${itemId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ action, corrected_data: corrected, userId: session.user.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Action failed');
+
+      addToast(
+        action === 'reject' ? 'Transaction rejected.' : 'Transaction approved and saved.',
+        action === 'reject' ? 'info' : 'success'
+      );
+      setSelectedReviewItem(null);
+      // Realtime will auto-refresh; also do immediate optimistic update
+      setReviewQueue(prev => prev.filter(i => i.id !== itemId));
+    } catch (err: any) {
+      addToast(`Failed: ${err.message}`, 'error');
+    }
+  }, [session, addToast]);
+
+  // ─── Derived State ────────────────────────────────────────────────────────
+  const filteredTransactions = useMemo(() => {
+    const s = search.toLowerCase();
+    return transactions.filter(tx =>
+      tx.sender_name?.toLowerCase().includes(s) ||
+      tx.beneficiary_name?.toLowerCase().includes(s) ||
+      tx.reference_number?.toLowerCase().includes(s) ||
+      tx.bank_name?.toLowerCase().includes(s)
+    );
+  }, [transactions, search]);
+
+  const paginatedTransactions = useMemo(() =>
+    filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
+    [filteredTransactions, page]
+  );
+  const totalPages = Math.ceil(filteredTransactions.length / ITEMS_PER_PAGE);
+
+  // ─── Badges ───────────────────────────────────────────────────────────────
+  const statusBadge = (status: string) => {
+    switch (status) {
+      case 'completed':
+      case 'completed_transaction':
+        return <span className="badge-pill badge-completed"><Check size={10} style={{ marginRight: '4px' }} />Completed</span>;
+      case 'pending_review':
+      case 'review_required':
+        return <span className="badge-pill badge-pending"><AlertCircle size={10} style={{ marginRight: '4px' }} />Review</span>;
+      case 'duplicate':
+      case 'completed_duplicate':
+        return <span className="badge-pill badge-duplicate"><X size={10} style={{ marginRight: '4px' }} />Duplicate</span>;
+      default: return <span className="badge-pill">{status}</span>;
+    }
+  };
+
+  const typeBadge = (type: string) => {
+    switch (type) {
+      case 'transfer': return <span className="badge-pill badge-transfer">Transfer</span>;
+      case 'deposit': return <span className="badge-pill badge-deposit">Deposit</span>;
+      case 'instapay': return <span className="badge-pill" style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}>InstaPay</span>;
+      default: return <span className="badge-pill">{type || '—'}</span>;
+    }
+  };
+
+  // ─── Loading / Auth States ─────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner" /> Booting Dashboard…
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="app login-screen" style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh',
+        backgroundImage: 'url(/login-bg.png)', // Fixed C2: use public asset, not hardcoded path
+        backgroundSize: 'cover', backgroundPosition: 'center',
+      }}>
+        <div className="stat-card glass animate-fade-in" style={{ padding: '3rem', textAlign: 'center', maxWidth: '440px' }}>
+          <div style={{ padding: '24px', background: 'rgba(99,102,241,0.1)', borderRadius: '24px', display: 'inline-block', marginBottom: '1.5rem', border: '1px solid rgba(99,102,241,0.2)' }}>
+            <Wallet size={48} color="var(--accent)" />
+          </div>
+          <h1 style={{ marginBottom: '0.75rem', fontSize: '1.75rem' }}>Financial Dashboard</h1>
+          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '1.5rem', letterSpacing: '0.1em' }}>v2.0 · Production</div>
+          <p style={{ color: 'var(--muted)', marginBottom: '2.5rem', lineHeight: '1.6' }}>
+            AI-powered WhatsApp financial transaction extraction and management platform.
+          </p>
+          <button
+            onClick={handleLogin}
+            className="tab active"
+            style={{
+              padding: '14px 28px', fontSize: '1rem', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: '0.75rem',
+              width: '100%', justifyContent: 'center', border: 'none',
+              background: 'linear-gradient(135deg, var(--accent), var(--accent2))',
+              color: 'white', borderRadius: '12px', fontWeight: 600,
+              boxShadow: '0 4px 15px rgba(99,102,241,0.3)',
+            }}
+          >
+            Sign in with Google
+          </button>
+          {authStatus && (
+            <div style={{ marginTop: '1.5rem', padding: '12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: '10px', fontSize: '0.8rem', color: '#f87171' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'center', marginBottom: '4px' }}>
+                <AlertCircle size={14} /> <strong>Auth Message</strong>
+              </div>
+              {authStatus}
+            </div>
+          )}
+        </div>
+        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      </div>
+    );
+  }
+
+  // ─── Main Dashboard ────────────────────────────────────────────────────────
+  return (
+    <div className="app">
+      <header className="header">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1 }}>
+          <div style={{ padding: '8px', background: 'var(--surface2)', borderRadius: '10px' }}>
+            <Wallet size={24} color="var(--accent)" />
+          </div>
+          <div>
+            <h1>Financial Dashboard</h1>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '2px' }}>
+              <span className="badge">{session.user.email}</span>
+              {refreshing && <RefreshCw size={12} className="spinner" style={{ color: 'var(--accent)' }} />}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <div style={{ position: 'relative' }}>
+            <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+            <input
+              type="text" placeholder="Search..."
+              value={search} onChange={e => { setSearch(e.target.value); setPage(0); }}
+              style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 12px 8px 36px', color: 'var(--text)', fontSize: '0.875rem', width: '200px' }}
+            />
+          </div>
+          <button onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')} title="Toggle Theme" style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            {theme === 'light' ? <Moon size={20} /> : <Sun size={20} />}
+          </button>
+          <button onClick={handleLogout} title="Logout" style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <LogOut size={20} />
+          </button>
+        </div>
+      </header>
+
+      <main className="main animate-fade-in">
+        {degradedMode && (
+          <div style={{ marginBottom: '1.5rem', background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '12px', padding: '1rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <AlertCircle size={24} />
+            <div>
+              <strong style={{ display: 'block', fontSize: '1rem' }}>Degraded Performance Mode Active</strong>
+              <span style={{ fontSize: '0.85rem' }}>Some backend infrastructure is unavailable. WhatsApp auto-restore & media ingestion may fail. The system is operating in a limited capacity.</span>
+            </div>
+          </div>
+        )}
+
+        {tab !== 'integrations' && (
+          <>
+            {/* Charts + Totals */}
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1.5rem', marginBottom: '2rem' }}>
+              <div className="stat-card glass" style={{ height: '300px', display: 'flex', flexDirection: 'column' }}>
+                <div className="section-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <TrendingUp size={16} color="var(--accent)" />
+                    <h2>Daily Volume (7d)</h2>
+                  </div>
+                </div>
+                <div style={{ flex: 1, marginTop: '1rem' }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={historicalMetrics}>
+                      <defs>
+                        <linearGradient id="barGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="var(--accent)" stopOpacity={0.8} />
+                          <stop offset="100%" stopColor="var(--accent2)" stopOpacity={0.4} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                      <XAxis dataKey="date" stroke="var(--muted)" fontSize={10} tickFormatter={(val) => val.split('-').slice(1).join('/')} />
+                      <YAxis stroke="var(--muted)" fontSize={10} allowDecimals={false} />
+                      <Tooltip contentStyle={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '12px' }} itemStyle={{ color: 'var(--accent)' }} />
+                      <Bar dataKey="successful_extractions" radius={[4, 4, 0, 0]}>
+                        {historicalMetrics.map((_e, i) => <Cell key={i} fill="url(#barGradient)" />)}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="stat-card glass" style={{ flex: 1 }}>
+                  <div className="label">Total EGP Volume</div>
+                  <div className="value" style={{ color: 'var(--accent2)' }}>{totals.egp_total.toLocaleString()}</div>
+                  <div className="sub">All-time</div>
+                </div>
+                <div className="stat-card glass" style={{ flex: 1 }}>
+                  <div className="label">Total USD Volume</div>
+                  <div className="value" style={{ color: '#a78bfa' }}>${totals.usd_total.toLocaleString()}</div>
+                  <div className="sub">All-time</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Stats Grid */}
+            <div className="stats-grid">
+              <div className="stat-card glass">
+                <div className="label">Total Messages</div>
+                <div className="value">{stats?.total_messages ?? 0}</div>
+              </div>
+              <div className="stat-card glass">
+                <div className="label">Success Rate</div>
+                <div className="value" style={{ color: 'var(--green)' }}>
+                  {/* Fixed M5: show 0% not 100% on empty state */}
+                  {stats && stats.total_messages > 0
+                    ? `${Math.round((stats.successful_extractions / stats.total_messages) * 100)}%`
+                    : '—'}
+                </div>
+              </div>
+              <div className="stat-card glass">
+                <div className="label">Pending Review</div>
+                <div className="value" style={{ color: 'var(--yellow)' }}>{stats?.pending_review ?? 0}</div>
+              </div>
+              <div className="stat-card glass">
+                <div className="label">Duplicates</div>
+                <div className="value" style={{ color: 'var(--red)' }}>{stats?.duplicates ?? 0}</div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Tabs */}
+        <div className="tabs">
+          <button className={`tab ${tab === 'transactions' ? 'active' : ''}`} onClick={() => setTab('transactions')}>
+            <Check size={14} /> Transactions
+            {filteredTransactions.length > 0 && <span style={{ marginLeft: '6px', background: 'rgba(99,102,241,0.2)', borderRadius: '10px', padding: '1px 7px', fontSize: '0.7rem' }}>{filteredTransactions.length}</span>}
+          </button>
+          <button className={`tab ${tab === 'review' ? 'active' : ''}`} onClick={() => setTab('review')}>
+            <AlertCircle size={14} /> Review
+            {reviewQueue.length > 0 && <span style={{ marginLeft: '6px', background: 'rgba(245,158,11,0.2)', color: 'var(--yellow)', borderRadius: '10px', padding: '1px 7px', fontSize: '0.7rem' }}>{reviewQueue.length}</span>}
+          </button>
+          <button className={`tab ${tab === 'queue' ? 'active' : ''}`} onClick={() => setTab('queue')}>
+            <Clock size={14} /> Queue
+            {incomingQueue.some(i => i.processing_status.includes('failed')) && <span style={{ marginLeft: '6px', width: '8px', height: '8px', background: 'var(--red)', borderRadius: '50%' }} />}
+          </button>
+          <button className={`tab ${tab === 'integrations' ? 'active' : ''}`} onClick={() => setTab('integrations')}>
+            <Settings size={14} /> Integrations
+          </button>
+        </div>
+
+        {/* Transactions Tab */}
+        {tab === 'transactions' && (
+          <>
+            <div className="table-wrap">
+              {paginatedTransactions.length === 0 ? (
+                <div className="empty">{search ? 'No transactions match your search.' : 'No transactions yet. Connect WhatsApp to start ingesting data.'}</div>
+              ) : (
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Date</th><th>Type</th><th>Details</th><th>Bank / Channel</th><th>Amount</th><th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {paginatedTransactions.map(tx => (
+                      <tr key={tx.id}>
+                        <td style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{tx.transaction_date || tx.created_at.split('T')[0]}</td>
+                        <td>{typeBadge(tx.transaction_type)}</td>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{tx.sender_name || 'Unknown'}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>→ {tx.beneficiary_name || 'N/A'}</div>
+                        </td>
+                        <td>
+                          <div>{tx.bank_name || '—'}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{tx.channel}</div>
+                        </td>
+                        <td style={{ fontWeight: 700, color: tx.amount > 1000 ? 'var(--accent2)' : 'inherit' }}>
+                          {tx.amount?.toLocaleString()} {tx.currency}
+                        </td>
+                        <td>{statusBadge(tx.processing_status)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            {/* Pagination */}
+            {totalPages > 1 && (
+              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1rem' }}>
+                <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
+                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', color: page === 0 ? 'var(--muted)' : 'white', cursor: page === 0 ? 'default' : 'pointer' }}>
+                  <ChevronLeft size={16} />
+                </button>
+                <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>Page {page + 1} of {totalPages}</span>
+                <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
+                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', color: page >= totalPages - 1 ? 'var(--muted)' : 'white', cursor: page >= totalPages - 1 ? 'default' : 'pointer' }}>
+                  <ChevronRight size={16} />
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Review Tab */}
+        {tab === 'review' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: '1rem' }}>
+            {reviewQueue.length === 0 ? (
+              <div className="empty" style={{ gridColumn: '1/-1' }}>
+                <Check size={24} color="var(--green)" style={{ marginBottom: '0.5rem' }} />
+                <br />Review queue is clear!
+              </div>
+            ) : reviewQueue.map(item => (
+              <div key={item.id} className="queue-card">
+                <div style={{ flex: 1 }}>
+                  <div className="q-reason">Ambiguous / Low Confidence Transaction</div>
+                  <div className="q-msg">{item.raw_text || '(no raw text)'}</div>
+                  {item.suggested_data?.amount && (
+                    <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
+                      Suggested: <strong style={{ color: 'white' }}>{item.suggested_data.amount} {item.suggested_data.currency || 'EGP'}</strong>
+                      {item.suggested_data.sender_name && <> · {item.suggested_data.sender_name}</>}
+                    </div>
+                  )}
+                  <div style={{ marginTop: '0.5rem' }}>
+                    <div className="conf-bar">
+                      <div className="conf-fill" style={{ width: `${(item.suggested_data?.confidence || 0.3) * 100}%` }} />
+                    </div>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--muted)', marginTop: '3px' }}>
+                      Confidence: {Math.round((item.suggested_data?.confidence || 0.3) * 100)}%
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedReviewItem(item)}
+                  className="tab active"
+                  style={{ padding: '6px 14px', fontSize: '0.8rem', marginTop: '0.5rem' }}
+                >
+                  Review →
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Queue Tab */}
+        {tab === 'queue' && (
+          <div className="table-wrap">
+            {incomingQueue.length === 0 ? (
+              <div className="empty">No messages in the processing queue.</div>
+            ) : (
+              <table>
+                <thead>
+                  <tr>
+                    <th>Received At</th><th>Stage</th><th>Status</th><th>Attempts</th><th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {incomingQueue.map(item => (
+                    <tr key={item.id}>
+                      <td style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{new Date(item.received_at).toLocaleString()}</td>
+                      <td style={{ fontWeight: 600, textTransform: 'uppercase', fontSize: '0.75rem' }}>{item.processing_stage}</td>
+                      <td>
+                        <span className={`badge-pill ${item.processing_status.includes('failed') ? 'badge-duplicate' : (item.processing_status === 'pending' ? 'badge-pending' : 'badge-completed')}`}>
+                          {item.processing_status}
+                        </span>
+                      </td>
+                      <td>{item.attempt_count}</td>
+                      <td>
+                        <button onClick={() => setSelectedInspectId(item.id)} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 8px', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.75rem' }}>
+                          Inspect
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* Integrations Tab */}
+        {tab === 'integrations' && (
+          <Integrations
+            user={session.user}
+            token={session.access_token}
+            onConnectGoogle={handleLogin}
+            onToast={addToast}
+            // New persistent props
+            googleConnected={googleConnected}
+            sheetUrl={sheetUrl}
+            whatsappStatus={whatsappStatus}
+            whatsappStatusPayload={whatsappStatusPayload}
+            qrCode={qrCode}
+            onConnectWhatsApp={handleConnectWhatsApp}
+            onDisconnectWhatsApp={handleDisconnectWhatsApp}
+          />
+        )}
+      </main>
+
+      {/* Review Modal */}
+      {selectedReviewItem && (
+        <ReviewModal
+          item={selectedReviewItem}
+          token={session?.access_token || ''}
+          onClose={() => setSelectedReviewItem(null)}
+          onAction={(action, corrected) => handleReviewAction(selectedReviewItem.id, action, corrected)}
+        />
+      )}
+
+      {selectedInspectId && (
+        <InspectorModal
+          id={selectedInspectId}
+          token={session?.access_token || ''}
+          onClose={() => setSelectedInspectId(null)}
+        />
+      )}
+
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+    </div>
+  );
+}

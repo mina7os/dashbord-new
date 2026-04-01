@@ -1,0 +1,20 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 3
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+
+[[mounts]]
+source = "wwebjs-auth"
+destination = "/app/.wwebjs_auth"
+
+[[mounts]]
+source = "wwebjs-cache"
+destination = "/app/.wwebjs_cache"
+
+[environments.production.variables]
+NODE_ENV = "production"
+PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = "true"

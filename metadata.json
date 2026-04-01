@@ -1,8 +1,0 @@
-{
-  "name": "WhatsApp Financial Ops Dashboard",
-  "description": "Automated financial transaction extraction from WhatsApp messages, screenshots, and PDFs with an operational dashboard.",
-  "requestFramePermissions": [
-    "camera",
-    "microphone"
-  ]
-}
