@@ -15,6 +15,8 @@ const WA_TAKEOVER_TIMEOUT_MS = Number(process.env.WA_TAKEOVER_TIMEOUT_MS || 1000
 const WA_QR_MAX_RETRIES = Number(process.env.WA_QR_MAX_RETRIES || 5);
 const WA_STARTUP_TIMEOUT_MS = Number(process.env.WA_STARTUP_TIMEOUT_MS || 180000);
 const WA_DISCOVERY_TIMEOUT_MS = Number(process.env.WA_DISCOVERY_TIMEOUT_MS || 25000);
+const WA_DISCOVERY_RETRY_DELAY_MS = Number(process.env.WA_DISCOVERY_RETRY_DELAY_MS || 3000);
+const WA_DISCOVERY_MAX_ATTEMPTS = Number(process.env.WA_DISCOVERY_MAX_ATTEMPTS || 3);
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
@@ -122,6 +124,10 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getActiveChatConfig(userId: string, chatId: string) {
@@ -501,18 +507,37 @@ export class WhatsAppManager {
   }
 
   async getAvailableChats(userId: string) {
-    if (this.cachedChats.has(userId)) return this.cachedChats.get(userId) || [];
+    const cached = this.cachedChats.get(userId);
+    if (cached && cached.length > 0) return cached;
     const client = this.getReadyClient(userId);
-    const chats = await withTimeout<any[]>(
-      client.getChats(),
-      WA_DISCOVERY_TIMEOUT_MS,
-      'Chat discovery timed out. WhatsApp is connected, but chat loading took too long. Please try again in a few seconds.'
-    );
-    const mapped = await Promise.all(chats.map(async (c: any) => ({
-      id: c.id._serialized, name: await resolveChatDisplayName(c), isGroup: Boolean(c.isGroup), unreadCount: Number(c.unreadCount || 0)
-    })));
-    this.cachedChats.set(userId, mapped);
-    return mapped;
+    let lastMapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
+
+    for (let attempt = 1; attempt <= WA_DISCOVERY_MAX_ATTEMPTS; attempt++) {
+      const chats = await withTimeout<any[]>(
+        client.getChats(),
+        WA_DISCOVERY_TIMEOUT_MS,
+        'Chat discovery timed out. WhatsApp is connected, but chat loading took too long. Please try again in a few seconds.'
+      );
+      const mapped = await Promise.all(chats.map(async (c: any) => ({
+        id: c.id._serialized,
+        name: await resolveChatDisplayName(c),
+        isGroup: Boolean(c.isGroup),
+        unreadCount: Number(c.unreadCount || 0),
+      })));
+
+      lastMapped = mapped;
+      if (mapped.length > 0) {
+        this.cachedChats.set(userId, mapped);
+        return mapped;
+      }
+
+      if (attempt < WA_DISCOVERY_MAX_ATTEMPTS) {
+        await sleep(WA_DISCOVERY_RETRY_DELAY_MS);
+      }
+    }
+
+    this.cachedChats.delete(userId);
+    return lastMapped;
   }
 
   async getRecentMessages(userId: string, chatId: string, limit: number = 40): Promise<ChatMessagePreview[]> {
