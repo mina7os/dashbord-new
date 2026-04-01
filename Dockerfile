@@ -4,6 +4,8 @@
 FROM node:20-slim AS builder
 
 WORKDIR /app
+ARG APP_REVISION=40ec1ae
+RUN echo "$APP_REVISION" > /tmp/app_revision
 
 # Install deps first for Docker layer caching
 COPY package*.json ./
