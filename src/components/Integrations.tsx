@@ -8,6 +8,8 @@ interface Props {
   token: string;
   onConnectGoogle: () => void;
   onToast: (message: string, type: 'success' | 'error' | 'info') => void;
+  role: 'manager' | 'cfo' | 'admin' | 'viewer';
+  accessibleSheets: Array<{ user_id: string; email: string; role: string; sheetId: string; url: string }>;
   // Shared persistent states
   googleConnected: boolean;
   sheetUrl: string | null;
@@ -20,10 +22,11 @@ interface Props {
 
 export default function Integrations(props: Props) {
   const { 
-    user, token, onConnectGoogle, onToast,
+    user, token, onConnectGoogle, onToast, role, accessibleSheets,
     googleConnected, sheetUrl, whatsappStatus, whatsappStatusPayload, qrCode,
     onConnectWhatsApp, onDisconnectWhatsApp
   } = props;
+  const isManager = role === 'manager';
 
   type ChatMessage = {
     id: string;
@@ -50,13 +53,14 @@ export default function Integrations(props: Props) {
   const [backfillLoading, setBackfillLoading] = useState(false);
 
   useEffect(() => {
+    if (!isManager) return;
     // Sync monitored chats on mount
     const loadMonitored = async () => {
       const { data: chats } = await supabase.from('whatsapp_connected_chats').select('chat_id').eq('user_id', user.id).eq('is_active', true);
       if (chats) setMonitoredChatIds(chats.map((c: any) => c.chat_id));
     };
     loadMonitored();
-  }, [user.id]);
+  }, [isManager, user.id]);
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
@@ -268,33 +272,66 @@ export default function Integrations(props: Props) {
                 </button>
               </div>
             )}
-            <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
-              <button
-                onClick={setupDatabase} disabled={settingUp}
-                className="badge badge-completed"
-                style={{ flex: 2, padding: '10px', cursor: 'pointer', border: 'none' }}
-              >
-                {settingUp ? <><RefreshCw size={12} className="spinner" style={{ display: 'inline', marginRight: '6px' }} />Setting up...</> : 'Reinitialize Database'}
-              </button>
-              <button
-                onClick={resetIntegration} disabled={settingUp}
-                className="badge badge-pending"
-                style={{ flex: 1, padding: '10px', cursor: 'pointer', border: 'none', background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}
-                title="Wipe integration and restart"
-              >
-                Reset
-              </button>
-            </div>
+            {isManager && (
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
+                <button
+                  onClick={setupDatabase} disabled={settingUp}
+                  className="badge badge-completed"
+                  style={{ flex: 2, padding: '10px', cursor: 'pointer', border: 'none' }}
+                >
+                  {settingUp ? <><RefreshCw size={12} className="spinner" style={{ display: 'inline', marginRight: '6px' }} />Setting up...</> : 'Reinitialize Database'}
+                </button>
+                <button
+                  onClick={resetIntegration} disabled={settingUp}
+                  className="badge badge-pending"
+                  style={{ flex: 1, padding: '10px', cursor: 'pointer', border: 'none', background: 'rgba(239,68,68,0.1)', color: '#ef4444' }}
+                  title="Wipe integration and restart"
+                >
+                  Reset
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <div style={{ textAlign: 'center', padding: '1rem' }}>
             <p style={{ fontSize: '0.9rem', marginBottom: '1rem', color: 'var(--muted)' }}>
-              Connect your Google account to create your transaction database.
+              {isManager ? 'Connect your Google account to create your transaction database.' : 'Google Sheet access is managed by the manager account.'}
             </p>
-            <button onClick={onConnectGoogle} className="badge badge-pending"
-              style={{ padding: '10px 20px', cursor: 'pointer', border: 'none' }}>
-              Connect Google Account
-            </button>
+            {isManager && (
+              <button onClick={onConnectGoogle} className="badge badge-pending"
+                style={{ padding: '10px 20px', cursor: 'pointer', border: 'none' }}>
+                Connect Google Account
+              </button>
+            )}
+          </div>
+        )}
+
+        {accessibleSheets.length > 0 && (
+          <div style={{ marginTop: '1rem', background: 'var(--surface2)', borderRadius: '12px', padding: '1rem' }}>
+            <div style={{ fontWeight: 600, marginBottom: '0.75rem' }}>
+              {role === 'manager' || role === 'cfo' ? 'Accessible Sheets' : 'Your Sheet'}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {accessibleSheets.map(sheet => (
+                <a
+                  key={`${sheet.user_id}-${sheet.sheetId}`}
+                  href={sheet.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    textDecoration: 'none',
+                    color: 'var(--text)',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '10px',
+                    padding: '10px 12px',
+                  }}
+                >
+                  <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>{sheet.email || sheet.sheetId}</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{sheet.role.toUpperCase()}</div>
+                </a>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -311,7 +348,13 @@ export default function Integrations(props: Props) {
           </div>
         </div>
 
-        {whatsappStatus === 'disconnected' && (
+        {!isManager && (
+          <div style={{ color: 'var(--muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
+            WhatsApp controls are manager-only. Other roles work from dashboard data and their assigned Google Sheets.
+          </div>
+        )}
+
+        {isManager && whatsappStatus === 'disconnected' && (
           <div className="whatsapp-disconnected z-in">
             <p style={{ color: 'var(--text)', marginBottom: '1.5rem', opacity: 0.8 }}>
               Authorize our system to ingest data from your WhatsApp chats.
@@ -323,7 +366,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {whatsappStatus === 'ready' && (
+        {isManager && whatsappStatus === 'ready' && (
           <div className="whatsapp-connected z-in">
             <div className="flex items-center space-x-4 mb-4">
               <div className="status-indicator">
@@ -378,7 +421,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {whatsappStatus === 'qr' && qrCode && (
+        {isManager && whatsappStatus === 'qr' && qrCode && (
           <div style={{ textAlign: 'center' }}>
             <div style={{ padding: '0.75rem', background: 'rgba(255,193,7,0.1)', borderRadius: '12px', marginBottom: '1rem', border: '1px solid rgba(255,193,7,0.2)' }}>
               <p style={{ fontSize: '0.8rem', color: 'var(--yellow)', margin: 0 }}>
@@ -395,7 +438,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {(whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning') && (
+        {isManager && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning') && (
           <div style={{ textAlign: 'center', padding: '2rem', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', border: '1px solid var(--border)' }}>
             <RefreshCw size={32} className="spinner" color="var(--primary)" />
             <p style={{ marginTop: '1.25rem', fontWeight: 500, color: 'white' }}>
@@ -417,7 +460,7 @@ export default function Integrations(props: Props) {
         )}
 
         {/* Chat Selector Modal Overlay */}
-        {showSelector && (
+        {isManager && showSelector && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             background: 'var(--surface)', zIndex: 10, borderRadius: '16px',
@@ -470,7 +513,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {showInbox && (
+        {isManager && showInbox && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             background: 'var(--surface)', zIndex: 11, borderRadius: '16px',

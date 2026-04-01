@@ -62,6 +62,17 @@ interface Toast {
   type: 'success' | 'error' | 'info';
 }
 
+interface AccessState {
+  role: 'manager' | 'cfo' | 'admin' | 'viewer';
+  canReadAllData: boolean;
+  canEditAllData: boolean;
+  canEditOwnData: boolean;
+  canReview: boolean;
+  canUseIntegrations: boolean;
+  canManageSystem: boolean;
+  mustProvideChangeReason: boolean;
+}
+
 const ITEMS_PER_PAGE = 25;
 
 // ─── Toast Component ──────────────────────────────────────────────────────────
@@ -91,18 +102,21 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
 }
 
 // ─── Review Item Modal ────────────────────────────────────────────────────────
-function ReviewModal({ item, token, onClose, onAction }: {
+function ReviewModal({ item, token, onClose, onAction, requireComment = false }: {
   item: ReviewItem; token: string;
   onClose: () => void;
-  onAction: (action: 'approve' | 'reject' | 'edit', corrected?: any) => void;
+  onAction: (action: 'approve' | 'reject' | 'edit', corrected?: any, comment?: string) => void;
+  requireComment?: boolean;
 }) {
   const [editMode, setEditMode] = useState(false);
   const [fields, setFields] = useState<any>(item.suggested_data || {});
   const [saving, setSaving] = useState(false);
+  const [comment, setComment] = useState('');
 
   const handleSave = async (action: 'approve' | 'reject' | 'edit') => {
+    if (requireComment && !comment.trim()) return;
     setSaving(true);
-    onAction(action, action === 'edit' ? fields : undefined);
+    onAction(action, action === 'edit' ? fields : undefined, comment);
   };
 
   return (
@@ -149,6 +163,30 @@ function ReviewModal({ item, token, onClose, onAction }: {
             ))}
           </div>
         )}
+
+        <div style={{ marginBottom: '1.5rem' }}>
+          <label style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Change Comment {requireComment ? '(Required)' : '(Optional)'}
+          </label>
+          <textarea
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            placeholder="Explain why you are approving, rejecting, or editing this item..."
+            rows={3}
+            style={{
+              width: '100%',
+              marginTop: '0.5rem',
+              background: 'var(--surface2)',
+              border: `1px solid ${requireComment && !comment.trim() ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
+              borderRadius: '8px',
+              padding: '10px 12px',
+              color: 'white',
+              fontSize: '0.85rem',
+              boxSizing: 'border-box',
+              resize: 'vertical'
+            }}
+          />
+        </div>
 
         <div style={{ display: 'flex', gap: '0.75rem' }}>
           {editMode ? (
@@ -302,6 +340,8 @@ export default function App() {
   const [selectedInspectId, setSelectedInspectId] = useState<string | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [degradedMode, setDegradedMode] = useState<boolean>(false);
+  const [access, setAccess] = useState<AccessState | null>(null);
+  const [accessibleSheets, setAccessibleSheets] = useState<Array<{ user_id: string; email: string; role: string; sheetId: string; url: string }>>([]);
 
   // Integration States
   const [googleConnected, setGoogleConnected] = useState(false);
@@ -413,28 +453,36 @@ export default function App() {
       const { user } = currentSession;
       const token = currentSession.access_token;
 
-      const [txRes, rqRes, iqRes, statsRes, histRes, healthRes] = await Promise.all([
-        supabase.from('transactions').select('*').eq('user_id', user.id)
-          .order('created_at', { ascending: false }).limit(200),
-        supabase.from('review_queue').select('*').eq('user_id', user.id)
-          .eq('review_status', 'pending').order('created_at', { ascending: false }),
+      const [ctxRes, txRes, rqRes, iqRes, statsRes, histRes, healthRes] = await Promise.all([
+        fetch('/api/me/context', {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r => r.json()),
+        fetch('/api/transactions', {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r => r.json()),
+        fetch('/api/review-queue', {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r => r.json()),
         fetch(`/api/pipeline/incoming?limit=100`, {
           headers: { Authorization: `Bearer ${token}` }
         }).then(r => r.json()),
         fetch(`/api/dashboard/stats?userId=${user.id}`, {
           headers: { Authorization: `Bearer ${token}` }
         }).then(r => r.json()),
-        supabase.from('dashboard_metrics').select('date, successful_extractions')
-          .eq('user_id', user.id).order('date', { ascending: true }).limit(7),
+        fetch('/api/dashboard/history', {
+          headers: { Authorization: `Bearer ${token}` }
+        }).then(r => r.json()),
         fetch('/api/health').then(r => r.json()).catch(() => ({ status: 'unknown' }))
       ]);
 
-      setTransactions(txRes.data || []);
-      setReviewQueue(rqRes.data || []);
+      setAccess(ctxRes.access || null);
+      setAccessibleSheets(ctxRes.accessibleSheets || []);
+      setTransactions(txRes.transactions || []);
+      setReviewQueue(rqRes.reviewQueue || []);
       setIncomingQueue(iqRes.queue || []);
       setStats(statsRes.stats);
       setTotals(statsRes.totals || { egp_total: 0, usd_total: 0 });
-      setHistoricalMetrics(histRes.data || []);
+      setHistoricalMetrics(histRes.metrics || []);
       if (healthRes.status === 'degraded') setDegradedMode(true);
     } catch (err) {
       console.error('Load failed:', err);
@@ -448,6 +496,7 @@ export default function App() {
   // ─── Realtime Subscription (replaces 30s polling) ─────────────────────────
   useEffect(() => {
     if (!session?.user?.id) return;
+    if (access?.canReadAllData) return;
 
     loadData();
     
@@ -482,7 +531,7 @@ export default function App() {
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [session?.user?.id, loadData]);
+  }, [session?.user?.id, access?.canReadAllData, loadData]);
 
   // Fallback auto-refresh in case browser Realtime misses an event.
   useEffect(() => {
@@ -519,15 +568,18 @@ export default function App() {
           const integration = await integrationRes.json();
           if (integration.connected) setGoogleConnected(true);
           if (integration.sheetId) setSheetUrl(`https://docs.google.com/spreadsheets/d/${integration.sheetId}`);
+          if (integration.accessibleSheets) setAccessibleSheets(integration.accessibleSheets);
         }
 
         // WhatsApp Status
-        const waRes = await fetch('/api/whatsapp/status', { headers: authHeaders });
-        if (waRes.ok) {
-          const waData = await waRes.json();
-          setWhatsappStatus(waData.status);
-          setWhatsappStatusPayload(waData);
-          if (waData.qr) setQrCode(waData.qr);
+        if (access?.canUseIntegrations) {
+          const waRes = await fetch('/api/whatsapp/status', { headers: authHeaders });
+          if (waRes.ok) {
+            const waData = await waRes.json();
+            setWhatsappStatus(waData.status);
+            setWhatsappStatusPayload(waData);
+            if (waData.qr) setQrCode(waData.qr);
+          }
         }
       } catch (err) {
         console.error('[App] Integration check failed:', err);
@@ -537,6 +589,8 @@ export default function App() {
     checkIntegrations();
 
     // Socket Setup
+    if (!access?.canUseIntegrations) return;
+
     const socket = io();
     socketRef.current = socket;
     socket.emit('join', session.user.id, session.access_token);
@@ -553,7 +607,7 @@ export default function App() {
     });
 
     return () => { socket.close(); };
-  }, [session, addToast]);
+  }, [session, access?.canUseIntegrations, addToast]);
 
   const handleConnectWhatsApp = async () => {
     if (!session) return;
@@ -624,7 +678,8 @@ export default function App() {
   const handleReviewAction = useCallback(async (
     itemId: string,
     action: 'approve' | 'reject' | 'edit',
-    corrected?: any
+    corrected?: any,
+    comment?: string
   ) => {
     if (!session) return;
     try {
@@ -634,7 +689,7 @@ export default function App() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ action, corrected_data: corrected, userId: session.user.id }),
+        body: JSON.stringify({ action, corrected_data: corrected, comment, userId: session.user.id }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Action failed');
@@ -667,6 +722,15 @@ export default function App() {
     [filteredTransactions, page]
   );
   const totalPages = Math.ceil(filteredTransactions.length / ITEMS_PER_PAGE);
+  const canSeeReview = !!access?.canReview;
+  const canSeeQueue = !!access?.canReview;
+  const canSeeIntegrations = access?.role === 'manager';
+
+  useEffect(() => {
+    if (tab === 'review' && !canSeeReview) setTab('transactions');
+    if (tab === 'queue' && !canSeeQueue) setTab('transactions');
+    if (tab === 'integrations' && !canSeeIntegrations) setTab('transactions');
+  }, [tab, canSeeReview, canSeeQueue, canSeeIntegrations]);
 
   // ─── Badges ───────────────────────────────────────────────────────────────
   const statusBadge = (status: string) => {
@@ -758,6 +822,7 @@ export default function App() {
             <h1>Financial Dashboard</h1>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '2px' }}>
               <span className="badge">{session.user.email}</span>
+              {access && <span className="badge" style={{ background: 'var(--surface2)', color: 'var(--text)' }}>{access.role.toUpperCase()}</span>}
               {refreshing && <RefreshCw size={12} className="spinner" style={{ color: 'var(--accent)' }} />}
             </div>
           </div>
@@ -869,17 +934,23 @@ export default function App() {
             <Check size={14} /> Transactions
             {filteredTransactions.length > 0 && <span style={{ marginLeft: '6px', background: 'rgba(99,102,241,0.2)', borderRadius: '10px', padding: '1px 7px', fontSize: '0.7rem' }}>{filteredTransactions.length}</span>}
           </button>
-          <button className={`tab ${tab === 'review' ? 'active' : ''}`} onClick={() => setTab('review')}>
-            <AlertCircle size={14} /> Review
-            {reviewQueue.length > 0 && <span style={{ marginLeft: '6px', background: 'rgba(245,158,11,0.2)', color: 'var(--yellow)', borderRadius: '10px', padding: '1px 7px', fontSize: '0.7rem' }}>{reviewQueue.length}</span>}
-          </button>
-          <button className={`tab ${tab === 'queue' ? 'active' : ''}`} onClick={() => setTab('queue')}>
-            <Clock size={14} /> Queue
-            {incomingQueue.some(i => i.processing_status.includes('failed')) && <span style={{ marginLeft: '6px', width: '8px', height: '8px', background: 'var(--red)', borderRadius: '50%' }} />}
-          </button>
-          <button className={`tab ${tab === 'integrations' ? 'active' : ''}`} onClick={() => setTab('integrations')}>
-            <Settings size={14} /> Integrations
-          </button>
+          {canSeeReview && (
+            <button className={`tab ${tab === 'review' ? 'active' : ''}`} onClick={() => setTab('review')}>
+              <AlertCircle size={14} /> Review
+              {reviewQueue.length > 0 && <span style={{ marginLeft: '6px', background: 'rgba(245,158,11,0.2)', color: 'var(--yellow)', borderRadius: '10px', padding: '1px 7px', fontSize: '0.7rem' }}>{reviewQueue.length}</span>}
+            </button>
+          )}
+          {canSeeQueue && (
+            <button className={`tab ${tab === 'queue' ? 'active' : ''}`} onClick={() => setTab('queue')}>
+              <Clock size={14} /> Queue
+              {incomingQueue.some(i => i.processing_status.includes('failed')) && <span style={{ marginLeft: '6px', width: '8px', height: '8px', background: 'var(--red)', borderRadius: '50%' }} />}
+            </button>
+          )}
+          {canSeeIntegrations && (
+            <button className={`tab ${tab === 'integrations' ? 'active' : ''}`} onClick={() => setTab('integrations')}>
+              <Settings size={14} /> Integrations
+            </button>
+          )}
         </div>
 
         {/* Transactions Tab */}
@@ -1018,6 +1089,8 @@ export default function App() {
             token={session.access_token}
             onConnectGoogle={handleLogin}
             onToast={addToast}
+            role={access?.role || 'viewer'}
+            accessibleSheets={accessibleSheets}
             // New persistent props
             googleConnected={googleConnected}
             sheetUrl={sheetUrl}
@@ -1036,7 +1109,8 @@ export default function App() {
           item={selectedReviewItem}
           token={session?.access_token || ''}
           onClose={() => setSelectedReviewItem(null)}
-          onAction={(action, corrected) => handleReviewAction(selectedReviewItem.id, action, corrected)}
+          requireComment={!!access?.mustProvideChangeReason}
+          onAction={(action, corrected, comment) => handleReviewAction(selectedReviewItem.id, action, corrected, comment)}
         />
       )}
 

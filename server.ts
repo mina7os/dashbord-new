@@ -11,6 +11,15 @@ import { supabaseAdmin } from "./src/lib/supabase-server.ts";
 import { WhatsAppManager } from "./src/services/whatsapp/whatsapp.ts";
 import { setupUserDatabase } from "./src/services/google-setup.ts";
 import { validateInfrastructure } from "./src/services/validator.ts";
+import {
+  ensureAccessSchema,
+  getAccessContext,
+  listUserRoles,
+  logChangeAudit,
+  requireReadAllData,
+  requireRole,
+  upsertUserRole,
+} from "./src/services/access.ts";
 
 /** ─── Config & State ──────────────────────────────────────────────────────── */
 const anonClient = createClient(
@@ -42,12 +51,13 @@ const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   }
 
   (req as any).user = user;
+  (req as any).access = await getAccessContext(user);
   next();
 };
 
 function requireOwnership(req: Request & { user?: any }, res: Response, next: NextFunction) {
   const userId = req.body?.userId || req.query?.userId;
-  if (userId && userId !== (req as any).user?.id) {
+  if (userId && userId !== (req as any).user?.id && !(req as any).access?.canReadAllData) {
     return res.status(403).json({ error: 'Access denied: userId mismatch' });
   }
   next();
@@ -73,8 +83,23 @@ function rateLimit(maxRequests: number, windowMs: number) {
   };
 }
 
+async function fetchScopedUserIds(access: any): Promise<string[]> {
+  if (access.canReadAllData) {
+    const { data, error } = await supabaseAdmin.from('user_roles').select('user_id').eq('is_active', true);
+    if (error || !data?.length) return [access.userId];
+    return data.map((row: any) => row.user_id);
+  }
+  return [access.userId];
+}
+
+function applyUserScope(query: any, access: any, column = 'user_id') {
+  if (access.canReadAllData) return query;
+  return query.eq(column, access.userId);
+}
+
 /** ─── App Setup & Bootstrap ────────────────────────────────────────────────── */
 async function startServer() {
+  await ensureAccessSchema();
   console.log('[Startup] Validating infrastructure...');
   const { success, results } = await validateInfrastructure();
   
@@ -169,6 +194,55 @@ async function startServer() {
   api.use(requireAuth as any);
   api.use(requireOwnership as any);
 
+  api.get('/me/context', async (req: any, res) => {
+    const userIds = await fetchScopedUserIds(req.access);
+    const { data: integrations } = await supabaseAdmin
+      .from('user_integrations')
+      .select('user_id, sheet_id')
+      .in('user_id', userIds);
+
+    const { data: roleRows } = await supabaseAdmin
+      .from('user_roles')
+      .select('user_id, email, role')
+      .in('user_id', userIds);
+
+    const accessibleSheets = (integrations || [])
+      .filter((row: any) => row.sheet_id)
+      .map((row: any) => {
+        const roleRow = roleRows?.find((candidate: any) => candidate.user_id === row.user_id);
+        return {
+          user_id: row.user_id,
+          email: roleRow?.email || '',
+          role: roleRow?.role || 'viewer',
+          sheet_id: row.sheet_id,
+          url: `https://docs.google.com/spreadsheets/d/${row.sheet_id}`,
+        };
+      });
+
+    res.json({
+      access: req.access,
+      accessibleSheets,
+    });
+  });
+
+  api.get('/access/users', async (req: any, res) => {
+    try {
+      const rows = await listUserRoles(req.access);
+      res.json({ users: rows });
+    } catch (err: any) {
+      res.status(403).json({ error: err.message || 'Access denied' });
+    }
+  });
+
+  api.post('/access/users', async (req: any, res) => {
+    try {
+      await upsertUserRole(req.access, String(req.body.email || ''), req.body.role);
+      res.json({ status: 'success' });
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || 'Failed to assign role' });
+    }
+  });
+
   // Modular Route Registrations
   registerIntegrationRoutes(api, deps);
   registerWhatsAppRoutes(api, deps);
@@ -200,17 +274,54 @@ async function startServer() {
 
 function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies) {
   api.get('/integrations/status', async (req: any, res) => {
-    const userId = req.user.id;
     try {
-      const { data, error } = await supabaseAdmin.from('user_integrations').select('google_tokens, sheet_id').eq('user_id', userId).maybeSingle();
+      const userIds = await fetchScopedUserIds(req.access);
+      const { data: ownIntegration, error } = await supabaseAdmin
+        .from('user_integrations')
+        .select('google_tokens, sheet_id')
+        .eq('user_id', req.user.id)
+        .maybeSingle();
       if (error) throw error;
-      res.json({ connected: !!data?.google_tokens, sheetId: data?.sheet_id });
+
+      const { data: integrations } = await supabaseAdmin
+        .from('user_integrations')
+        .select('user_id, sheet_id')
+        .in('user_id', userIds);
+      const { data: roleRows } = await supabaseAdmin
+        .from('user_roles')
+        .select('user_id, email, role')
+        .in('user_id', userIds);
+
+      const accessibleSheets = (integrations || [])
+        .filter((row: any) => row.sheet_id)
+        .map((row: any) => {
+          const roleRow = roleRows?.find((candidate: any) => candidate.user_id === row.user_id);
+          return {
+            user_id: row.user_id,
+            email: roleRow?.email || '',
+            role: roleRow?.role || 'viewer',
+            sheetId: row.sheet_id,
+            url: `https://docs.google.com/spreadsheets/d/${row.sheet_id}`,
+          };
+        });
+
+      res.json({
+        connected: !!ownIntegration?.google_tokens,
+        sheetId: ownIntegration?.sheet_id,
+        accessibleSheets,
+        canUseIntegrations: req.access.canUseIntegrations,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to fetch status' });
     }
   });
 
   api.post('/integrations/reset', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     const userId = req.user.id;
     try {
       await supabaseAdmin.from('user_integrations').delete().eq('user_id', userId);
@@ -227,6 +338,11 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
   });
 
   api.post('/integrations/google-tokens', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     const userId = req.user.id;
     const { tokens } = req.body;
     if (!tokens) return res.status(400).json({ error: 'Tokens required' });
@@ -246,6 +362,11 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
   });
 
   api.post('/integrations/setup-database', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     const userId = req.user.id;
     try {
       const { data: existing } = await supabaseAdmin.from('user_integrations').select('google_tokens, sheet_id').eq('user_id', userId).maybeSingle();
@@ -266,6 +387,11 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
   api.get('/whatsapp/chats', rateLimit(20, 60000) as any, async (req: any, res) => {
     try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
+    try {
       const chats = await deps.whatsapp.getAvailableChats(req.user.id);
       res.json({ chats });
     } catch (err: any) {
@@ -274,10 +400,20 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
   });
 
   api.get('/whatsapp/status', rateLimit(60, 60000) as any, (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     res.json(deps.whatsapp.getStatus(req.user.id));
   });
 
   api.get('/whatsapp/messages', rateLimit(60, 60000) as any, async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     try {
       const messages = await deps.whatsapp.getRecentMessages(req.user.id, String(req.query.chatId || ''), Number(req.query.limit || 40));
       res.json({ messages });
@@ -288,6 +424,11 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.post('/whatsapp/connect', rateLimit(5, 60000) as any, async (req: any, res) => {
     try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
+    try {
       await deps.whatsapp.startInstance(req.user.id, { freshSession: true });
       res.json(deps.whatsapp.getStatus(req.user.id));
     } catch (err: any) {
@@ -296,6 +437,11 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
   });
 
   api.post('/whatsapp/disconnect', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     try {
       await deps.whatsapp.stopInstance(req.user.id);
       res.json({ status: "disconnected" });
@@ -306,6 +452,11 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.post('/whatsapp/messages', rateLimit(30, 60000) as any, async (req: any, res) => {
     try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
+    try {
       const message = await deps.whatsapp.sendMessageToChat(req.user.id, String(req.body.chatId || ''), String(req.body.text || ''));
       res.json({ message });
     } catch (err: any) {
@@ -314,6 +465,11 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
   });
 
   api.post('/whatsapp/backfill', rateLimit(10, 60000) as any, async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     if (!req.body.chatId) return res.status(400).json({ error: 'chatId is required' });
     try {
       const result = await deps.whatsapp.backfillChat(req.user.id, String(req.body.chatId), Number(req.body.lookbackMinutes || 120));
@@ -328,7 +484,12 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
   api.get('/pipeline/incoming', async (req: any, res) => {
     const { status, stage, chatId, limit = 50 } = req.query;
     try {
-      let query = supabaseAdmin.from('incoming_messages').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(Number(limit));
+      if (!req.access.canReview && !req.access.canReadAllData) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+
+      let query = supabaseAdmin.from('incoming_messages').select('*').order('created_at', { ascending: false }).limit(Number(limit));
+      query = applyUserScope(query, req.access);
       if (status) query = query.eq('processing_status', status);
       if (stage) query = query.eq('processing_stage', stage);
       if (chatId) query = query.eq('chat_id', chatId);
@@ -342,17 +503,24 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
   });
 
   api.get('/pipeline/incoming/:id', async (req: any, res) => {
-    const userId = req.user.id;
     try {
+      if (!req.access.canReview && !req.access.canReadAllData) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+
       const { data: incoming, error: incError } = await supabaseAdmin.from('incoming_messages').select('*')
-        .or(`id.eq.${req.params.id},message_id.eq.${req.params.id}`).eq('user_id', userId).maybeSingle();
+        .or(`id.eq.${req.params.id},message_id.eq.${req.params.id}`)
+        .maybeSingle();
 
       if (incError) throw incError;
       if (!incoming) return res.status(404).json({ error: 'Message not found in processing queue' });
+      if (!req.access.canReadAllData && incoming.user_id !== req.access.userId) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
 
       const [{ data: transactions }, { data: reviews }] = await Promise.all([
-        supabaseAdmin.from('transactions').select('*').eq('message_id', incoming.message_id).eq('user_id', userId),
-        supabaseAdmin.from('review_queue').select('*').eq('message_id', incoming.message_id).eq('user_id', userId)
+        supabaseAdmin.from('transactions').select('*').eq('message_id', incoming.message_id).eq('user_id', incoming.user_id),
+        supabaseAdmin.from('review_queue').select('*').eq('message_id', incoming.message_id).eq('user_id', incoming.user_id)
       ]);
 
       res.json({
@@ -378,6 +546,11 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
   api.get('/inspect/:id', async (req: any, res) => res.redirect(`/api/pipeline/incoming/${req.params.id}`));
 
   api.post('/ingest', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager']);
+    } catch (err: any) {
+      return res.status(403).json({ error: err.message });
+    }
     const { message_text, image_base64, attachment_type } = req.body;
     if (!message_text && !image_base64) return res.status(400).json({ error: 'message_text or image_base64 required' });
 
@@ -419,12 +592,26 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
   api.get('/dashboard/stats', rateLimit(120, 60000) as any, async (req: any, res) => {
     try {
       const today = new Date().toISOString().split('T')[0];
+      const userIds = await fetchScopedUserIds(req.access);
       const [metricsRes, transactionsRes] = await Promise.all([
-        supabaseAdmin.from('dashboard_metrics').select('*').eq('user_id', req.user.id).eq('date', today).maybeSingle(),
-        supabaseAdmin.from('transactions').select('amount, currency').eq('user_id', req.user.id),
+        req.access.canReadAllData
+          ? supabaseAdmin.from('dashboard_metrics').select('*').in('user_id', userIds).eq('date', today)
+          : supabaseAdmin.from('dashboard_metrics').select('*').eq('user_id', req.user.id).eq('date', today).maybeSingle(),
+        req.access.canReadAllData
+          ? supabaseAdmin.from('transactions').select('amount, currency').in('user_id', userIds)
+          : supabaseAdmin.from('transactions').select('amount, currency').eq('user_id', req.user.id),
       ]);
 
-      const stats = metricsRes.data || { total_messages: 0, financial_candidates: 0, successful_extractions: 0, pending_review: 0, duplicates: 0 };
+      const blankStats = { total_messages: 0, financial_candidates: 0, successful_extractions: 0, pending_review: 0, duplicates: 0 };
+      const stats = Array.isArray(metricsRes.data)
+        ? metricsRes.data.reduce((acc: any, row: any) => ({
+            total_messages: acc.total_messages + (Number(row.total_messages) || 0),
+            financial_candidates: acc.financial_candidates + (Number(row.financial_candidates) || 0),
+            successful_extractions: acc.successful_extractions + (Number(row.successful_extractions) || 0),
+            pending_review: acc.pending_review + (Number(row.pending_review) || 0),
+            duplicates: acc.duplicates + (Number(row.duplicates) || 0),
+          }), blankStats)
+        : (metricsRes.data || blankStats);
       const totals = { egp_total: 0, usd_total: 0 };
       transactionsRes.data?.forEach((tx: any) => {
         const amt = Number(tx.amount) || 0;
@@ -437,43 +624,134 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
       res.status(500).json({ error: "Failed to fetch stats" });
     }
   });
+
+  api.get('/dashboard/history', rateLimit(120, 60000) as any, async (req: any, res) => {
+    try {
+      const userIds = await fetchScopedUserIds(req.access);
+      const { data, error } = await (
+        req.access.canReadAllData
+          ? supabaseAdmin.from('dashboard_metrics').select('date, successful_extractions').in('user_id', userIds)
+          : supabaseAdmin.from('dashboard_metrics').select('date, successful_extractions').eq('user_id', req.user.id)
+      )
+        .order('date', { ascending: true })
+        .limit(30);
+
+      if (error) throw error;
+
+      const bucket = new Map<string, number>();
+      (data || []).forEach((row: any) => {
+        bucket.set(row.date, (bucket.get(row.date) || 0) + (Number(row.successful_extractions) || 0));
+      });
+
+      res.json({
+        metrics: Array.from(bucket.entries()).map(([date, successful_extractions]) => ({
+          date,
+          successful_extractions,
+        })),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch history' });
+    }
+  });
+
+  api.get('/transactions', rateLimit(120, 60000) as any, async (req: any, res) => {
+    try {
+      const userIds = await fetchScopedUserIds(req.access);
+      const query = req.access.canReadAllData
+        ? supabaseAdmin.from('transactions').select('*').in('user_id', userIds)
+        : supabaseAdmin.from('transactions').select('*').eq('user_id', req.user.id);
+      const { data, error } = await query.order('created_at', { ascending: false }).limit(200);
+      if (error) throw error;
+      res.json({ transactions: data || [] });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch transactions' });
+    }
+  });
+
+  api.get('/review-queue', rateLimit(120, 60000) as any, async (req: any, res) => {
+    try {
+      if (!req.access.canReview && !req.access.canReadAllData) {
+        return res.json({ reviewQueue: [] });
+      }
+      const userIds = await fetchScopedUserIds(req.access);
+      const query = req.access.canReadAllData
+        ? supabaseAdmin.from('review_queue').select('*').in('user_id', userIds)
+        : supabaseAdmin.from('review_queue').select('*').eq('user_id', req.user.id);
+      const { data, error } = await query.eq('review_status', 'pending').order('created_at', { ascending: false });
+      if (error) throw error;
+      res.json({ reviewQueue: data || [] });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to fetch review queue' });
+    }
+  });
 }
 
 function registerReviewRoutes(api: express.Router, deps: ServerDependencies) {
   api.patch('/review/:id', async (req: any, res) => {
-    const { action, corrected_data } = req.body;
+    const { action, corrected_data, comment } = req.body;
     if (!['approve', 'reject', 'edit'].includes(action)) return res.status(400).json({ error: "Invalid action." });
 
     try {
-      const { data: item } = await supabaseAdmin.from('review_queue').select('*').eq('id', req.params.id).eq('user_id', req.user.id).single();
+      requireRole(req.access, ['manager', 'cfo', 'admin']);
+      if (req.access.mustProvideChangeReason && !String(comment || '').trim()) {
+        return res.status(400).json({ error: 'Comment is required for admin changes.' });
+      }
+
+      const { data: item } = await supabaseAdmin.from('review_queue').select('*').eq('id', req.params.id).single();
       if (!item) return res.status(404).json({ error: 'Review item not found' });
+      if (!req.access.canEditAllData && item.user_id !== req.user.id) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
 
       const { saveTransactionToOutputs, upsertDailyMetrics, incrementMetric } = await import('./src/services/transactionService.ts');
       const { advanceStage } = await import('./src/services/whatsapp/incomingMessages.ts');
-      const { data: incomingRow } = await supabaseAdmin.from('incoming_messages').select('id').eq('user_id', req.user.id).eq('message_id', item.message_id).maybeSingle();
+      const targetUserId = item.user_id;
+      const { data: incomingRow } = await supabaseAdmin.from('incoming_messages').select('id').eq('user_id', targetUserId).eq('message_id', item.message_id).maybeSingle();
 
       if (action === 'reject') {
         await Promise.all([
           supabaseAdmin.from('review_queue').update({ review_status: 'rejected' }).eq('id', req.params.id),
           incomingRow?.id ? advanceStage(incomingRow.id, 'rejected_via_review', 'completed_non_transaction') : Promise.resolve(),
-          incrementMetric(req.user.id, 'review_rejected_count')
+          incrementMetric(targetUserId, 'review_rejected_count')
         ]);
+        await logChangeAudit({
+          actor: req.access,
+          action: 'review.reject',
+          entityType: 'review_queue',
+          entityId: req.params.id,
+          targetUserId,
+          reason: comment,
+          metadata: { reviewAction: action, messageId: item.message_id },
+        });
         return res.json({ status: 'rejected' });
       }
 
       const txData = action === 'edit' ? { ...item.suggested_data, ...corrected_data } : item.suggested_data;
-      txData.user_id = req.user.id;
+      txData.user_id = targetUserId;
       txData.processing_status = 'completed';
 
-      const { data: integration } = await supabaseAdmin.from('user_integrations').select('*').eq('user_id', req.user.id).single();
-      await saveTransactionToOutputs(txData, { userId: req.user.id, sheetId: integration?.sheet_id, tokens: integration?.google_tokens } as any);
-      await upsertDailyMetrics(req.user.id, new Date().toISOString().split('T')[0], txData);
+      const { data: integration } = await supabaseAdmin.from('user_integrations').select('*').eq('user_id', targetUserId).single();
+      await saveTransactionToOutputs(txData, { userId: targetUserId, sheetId: integration?.sheet_id, tokens: integration?.google_tokens } as any);
+      await upsertDailyMetrics(targetUserId, new Date().toISOString().split('T')[0], txData);
 
       await Promise.all([
         supabaseAdmin.from('review_queue').update({ review_status: 'approved' }).eq('id', req.params.id),
         incomingRow?.id ? advanceStage(incomingRow.id, 'completed_via_review', 'completed_transaction', { isFinancial: true }) : Promise.resolve(),
-        incrementMetric(req.user.id, 'successful_extractions')
+        incrementMetric(targetUserId, 'successful_extractions')
       ]);
+      await logChangeAudit({
+        actor: req.access,
+        action: action === 'edit' ? 'review.edit' : 'review.approve',
+        entityType: 'review_queue',
+        entityId: req.params.id,
+        targetUserId,
+        reason: comment,
+        metadata: {
+          reviewAction: action,
+          correctedData: corrected_data || null,
+          messageId: item.message_id,
+        },
+      });
       return res.json({ status: 'approved' });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to process review action' });
