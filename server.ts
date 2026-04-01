@@ -153,6 +153,18 @@ async function startServer() {
     });
   });
 
+  app.get('/api/public-config', (_req, res) => {
+    res.json({
+      supabaseUrl: process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '',
+      supabaseAnonKey:
+        process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+        process.env.VITE_SUPABASE_ANON_KEY ||
+        process.env.SUPABASE_PUBLISHABLE_KEY ||
+        process.env.SUPABASE_ANON_KEY ||
+        '',
+    });
+  });
+
   const api = express.Router();
   api.use(requireAuth as any);
   api.use(requireOwnership as any);
