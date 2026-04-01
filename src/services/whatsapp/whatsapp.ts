@@ -15,6 +15,7 @@ const WA_TAKEOVER_TIMEOUT_MS = Number(process.env.WA_TAKEOVER_TIMEOUT_MS || 1000
 const WA_QR_MAX_RETRIES = Number(process.env.WA_QR_MAX_RETRIES || 5);
 const WA_STARTUP_TIMEOUT_MS = Number(process.env.WA_STARTUP_TIMEOUT_MS || 180000);
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
+const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
 function resolveChromeExecutable(): string | undefined {
   if (PUPPETEER_EXECUTABLE_PATH) return PUPPETEER_EXECUTABLE_PATH;
@@ -133,6 +134,7 @@ export class WhatsAppManager {
   private generations: Map<string, number> = new Map();
   private stageTimers: Map<string, NodeJS.Timeout> = new Map();
   private failureCounts: Map<string, number> = new Map();
+  private ignoredOutgoingMessages: Map<string, Set<string>> = new Map();
 
   private io: Server;
 
@@ -142,6 +144,8 @@ export class WhatsAppManager {
     this.clearRuntimeState = this.clearRuntimeState.bind(this);
     this.startInstance = this.startInstance.bind(this);
     this.handleIncomingMessage = this.handleIncomingMessage.bind(this);
+    this.sendAutomatedReply = this.sendAutomatedReply.bind(this);
+    messageProcessor.setReplySender(this.sendAutomatedReply);
   }
 
   getStatus(userId: string): WAState {
@@ -412,6 +416,9 @@ export class WhatsAppManager {
     if (msg.fromMe) console.log(`[WhatsApp | ${userId}] 📥 Self-Message Intake: ID=${messageId} chatId=${chatId}`);
     console.log(`[WhatsApp | ${userId}] 📨 Incoming msg chatId=${chatId} fromMe=${msg.fromMe} hasMedia=${msg.hasMedia}`);
     if (!messageId || !chatId) return 'skipped';
+    if (msg.fromMe && this.isIgnoredOutgoingMessage(userId, messageId)) {
+      return 'skipped';
+    }
 
     const iFKey = `${userId}:${messageId}`;
     if (this.inFlightMessages.has(iFKey)) return 'skipped';
@@ -505,6 +512,35 @@ export class WhatsAppManager {
     const client = this.getReadyClient(userId);
     const sent = await client.sendMessage(chatId, trimmed);
     return this.mapChatMessage(chatId, sent, client);
+  }
+
+  async sendAutomatedReply(userId: string, chatId: string, text: string): Promise<void> {
+    if (!WA_AUTO_REPLY_ENABLED) return;
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return;
+
+    try {
+      const client = this.getReadyClient(userId);
+      const sent = await client.sendMessage(chatId, trimmed);
+      const sentId = getMessageUniqueId(sent);
+      if (sentId) {
+        const bucket = this.ignoredOutgoingMessages.get(userId) || new Set<string>();
+        bucket.add(sentId);
+        this.ignoredOutgoingMessages.set(userId, bucket);
+        setTimeout(() => bucket.delete(sentId), 10 * 60 * 1000);
+      }
+      console.log(`[WhatsApp | ${userId}] Auto reply sent to ${chatId}`);
+    } catch (err: any) {
+      console.warn(`[WhatsApp | ${userId}] Auto reply failed:`, err.message || err);
+    }
+  }
+
+  private isIgnoredOutgoingMessage(userId: string, messageId: string): boolean {
+    const bucket = this.ignoredOutgoingMessages.get(userId);
+    if (!bucket) return false;
+    if (!bucket.has(messageId)) return false;
+    bucket.delete(messageId);
+    return true;
   }
 
   async stopInstance(userId: string, wipeSession: boolean = false): Promise<void> {

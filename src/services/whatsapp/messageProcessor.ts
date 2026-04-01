@@ -36,6 +36,7 @@ export class MessageProcessor {
   private consecutiveFailures: Map<string, number> = new Map();
   private processingUsers: Set<string> = new Set();
   private circuitBreakers: Map<string, number> = new Map();
+  private replySender?: (userId: string, chatId: string, text: string) => Promise<void>;
 
   public start(userId: string) {
     if (this.usersPolling.has(userId)) return;
@@ -66,6 +67,10 @@ export class MessageProcessor {
 
   public trigger(userId: string) {
     if (!this.usersPolling.has(userId)) this.start(userId);
+  }
+
+  public setReplySender(sender: (userId: string, chatId: string, text: string) => Promise<void>) {
+    this.replySender = sender;
   }
 
   private async tick(userId: string) {
@@ -213,6 +218,7 @@ export class MessageProcessor {
       if (tx.reference_number && await checkDuplicateTransactionByReference(userId, tx.reference_number)) {
         await incrementMetric(userId, 'duplicates');
         await advanceStage(row.id, 'duplicate_reference', 'completed_duplicate');
+        this.sendReplySafe(userId, row.chat_id, this.buildDuplicateReply(tx.reference_number));
         return; 
       }
 
@@ -237,13 +243,42 @@ export class MessageProcessor {
       if (result.status === 'LOW_CONFIDENCE' || reviewRequired) {
         await incrementMetric(userId, 'pending_review');
         await markReviewRequired(row.id, result.review_reason || 'Needs review', result.confidence);
+        this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
       } else {
         await incrementMetric(userId, 'successful_extractions');
         await markCompletedTransaction(row.id, { isFinancial: true, transactionCount: result.transactions.length });
+        this.sendReplySafe(userId, row.chat_id, this.buildSuccessReply(result.transactions.length));
       }
     } else {
       await markFailedRetriable(row.id, 'Transaction persistence failed', 300000);
+      this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
     }
+  }
+
+  private sendReplySafe(userId: string, chatId: string, text: string) {
+    if (!this.replySender || !text.trim()) return;
+    void this.replySender(userId, chatId, text).catch((err) => {
+      console.warn(`[MessageProcessor | ${userId}] Auto-reply skipped:`, err?.message || err);
+    });
+  }
+
+  private buildSuccessReply(transactionCount: number) {
+    const suffix = transactionCount > 1 ? `${transactionCount} transactions were` : 'The transaction was';
+    return `Received. ${suffix} processed successfully. If this was a bank transfer, balance updates may take 1 to 2 days to appear.`;
+  }
+
+  private buildDuplicateReply(referenceNumber?: string) {
+    return referenceNumber
+      ? `Received. This transaction was already recorded under reference ${referenceNumber}.`
+      : 'Received. This transaction was already recorded.';
+  }
+
+  private buildReviewReply() {
+    return 'Received. The transaction needs manual review before final confirmation.';
+  }
+
+  private buildFailureReply() {
+    return 'Received, but processing could not be completed automatically. Please review it manually.';
   }
 }
 
