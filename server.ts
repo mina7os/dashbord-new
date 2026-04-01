@@ -64,9 +64,9 @@ function requireOwnership(req: Request & { user?: any }, res: Response, next: Ne
 }
 
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
-function rateLimit(maxRequests: number, windowMs: number) {
+function rateLimit(maxRequests: number, windowMs: number, scope = 'global') {
   return (req: Request, res: Response, next: NextFunction) => {
-    const key = (req as any).user?.id || req.ip;
+    const key = `${scope}:${(req as any).user?.id || req.ip}`;
     const now = Date.now();
     const entry = rateLimitMap.get(key);
 
@@ -385,7 +385,7 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 }
 
 function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
-  api.get('/whatsapp/chats', rateLimit(20, 60000) as any, async (req: any, res) => {
+  api.get('/whatsapp/chats', rateLimit(20, 60000, 'whatsapp.chats') as any, async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);
     } catch (err: any) {
@@ -399,7 +399,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
     }
   });
 
-  api.get('/whatsapp/status', rateLimit(60, 60000) as any, (req: any, res) => {
+  api.get('/whatsapp/status', rateLimit(60, 60000, 'whatsapp.status') as any, (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);
     } catch (err: any) {
@@ -408,7 +408,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
     res.json(deps.whatsapp.getStatus(req.user.id));
   });
 
-  api.get('/whatsapp/messages', rateLimit(60, 60000) as any, async (req: any, res) => {
+  api.get('/whatsapp/messages', rateLimit(60, 60000, 'whatsapp.messages.get') as any, async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);
     } catch (err: any) {
@@ -422,7 +422,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
     }
   });
 
-  api.post('/whatsapp/connect', rateLimit(5, 60000) as any, async (req: any, res) => {
+  api.post('/whatsapp/connect', rateLimit(5, 60000, 'whatsapp.connect') as any, async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);
     } catch (err: any) {
@@ -450,7 +450,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
     }
   });
 
-  api.post('/whatsapp/messages', rateLimit(30, 60000) as any, async (req: any, res) => {
+  api.post('/whatsapp/messages', rateLimit(30, 60000, 'whatsapp.messages.post') as any, async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);
     } catch (err: any) {
@@ -464,7 +464,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
     }
   });
 
-  api.post('/whatsapp/backfill', rateLimit(10, 60000) as any, async (req: any, res) => {
+  api.post('/whatsapp/backfill', rateLimit(10, 60000, 'whatsapp.backfill') as any, async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);
     } catch (err: any) {
@@ -589,7 +589,7 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
 }
 
 function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) {
-  api.get('/dashboard/stats', rateLimit(120, 60000) as any, async (req: any, res) => {
+  api.get('/dashboard/stats', rateLimit(120, 60000, 'dashboard.stats') as any, async (req: any, res) => {
     try {
       const today = new Date().toISOString().split('T')[0];
       const userIds = await fetchScopedUserIds(req.access);
@@ -625,7 +625,7 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
     }
   });
 
-  api.get('/dashboard/history', rateLimit(120, 60000) as any, async (req: any, res) => {
+  api.get('/dashboard/history', rateLimit(120, 60000, 'dashboard.history') as any, async (req: any, res) => {
     try {
       const userIds = await fetchScopedUserIds(req.access);
       const { data, error } = await (
@@ -654,7 +654,7 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
     }
   });
 
-  api.get('/transactions', rateLimit(120, 60000) as any, async (req: any, res) => {
+  api.get('/transactions', rateLimit(120, 60000, 'dashboard.transactions') as any, async (req: any, res) => {
     try {
       const userIds = await fetchScopedUserIds(req.access);
       const query = req.access.canReadAllData
@@ -668,7 +668,7 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
     }
   });
 
-  api.get('/review-queue', rateLimit(120, 60000) as any, async (req: any, res) => {
+  api.get('/review-queue', rateLimit(120, 60000, 'dashboard.review-queue') as any, async (req: any, res) => {
     try {
       if (!req.access.canReview && !req.access.canReadAllData) {
         return res.json({ reviewQueue: [] });
