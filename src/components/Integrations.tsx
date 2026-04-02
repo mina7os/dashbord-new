@@ -66,16 +66,24 @@ export default function Integrations(props: Props) {
 
   const fetchChats = async () => {
     setDiscoveryLoading(true);
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 20000);
     try {
       const res = await fetch(`/api/whatsapp/chats?userId=${user.id}`, {
         headers: authHeaders,
+        signal: controller.signal,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to fetch chats');
       setAvailableChats(data.chats);
     } catch (err: any) {
-      onToast('Failed to load chats: ' + err.message, 'error');
+      const message =
+        err?.name === 'AbortError'
+          ? 'Chat discovery took too long. Please try again once WhatsApp stays ready.'
+          : err.message;
+      onToast('Failed to load chats: ' + message, 'error');
     } finally {
+      window.clearTimeout(timeoutId);
       setDiscoveryLoading(false);
     }
   };

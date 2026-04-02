@@ -609,6 +609,37 @@ export default function App() {
     return () => { socket.close(); };
   }, [session, access?.canUseIntegrations, addToast]);
 
+  useEffect(() => {
+    if (!session || !access?.canUseIntegrations) return;
+
+    let cancelled = false;
+    const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` };
+
+    const syncWhatsappStatus = async () => {
+      try {
+        const waRes = await fetch('/api/whatsapp/status', { headers: authHeaders });
+        if (!waRes.ok || cancelled) return;
+
+        const waData = await waRes.json();
+        if (cancelled) return;
+
+        setWhatsappStatus(waData.status);
+        setWhatsappStatusPayload(waData);
+        setQrCode(waData.qr || null);
+      } catch {
+        // Socket remains the primary realtime path; polling is a fallback for missed updates.
+      }
+    };
+
+    void syncWhatsappStatus();
+    const interval = window.setInterval(syncWhatsappStatus, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [session, access?.canUseIntegrations]);
+
   const handleConnectWhatsApp = async () => {
     if (!session) return;
     setWhatsappStatus('connecting');
