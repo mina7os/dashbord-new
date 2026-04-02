@@ -123,9 +123,10 @@ async function startServer() {
 
   const isProduction = process.env.NODE_ENV === 'production';
   const configuredAppUrl = (process.env.APP_URL || '').trim();
-  const allowedOrigin = (!configuredAppUrl || configuredAppUrl === 'MY_APP_URL')
+  const railwayUrl = process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null;
+  const allowedOrigin = railwayUrl || ((!configuredAppUrl || configuredAppUrl === 'MY_APP_URL')
     ? 'http://localhost:3000'
-    : configuredAppUrl;
+    : configuredAppUrl);
 
   app.use((req, res, next) => {
     const origin = req.headers.origin;
@@ -140,7 +141,8 @@ async function startServer() {
     next();
   });
 
-  const io = new SocketServer(server, { cors: { origin: isProduction ? allowedOrigin : '*' } });
+  const socketCorsOrigin = isProduction ? (allowedOrigin === '*' ? '*' : [allowedOrigin, 'https://whatsapp-dashboard-production-71b8.up.railway.app']) : '*';
+  const io = new SocketServer(server, { cors: { origin: socketCorsOrigin, credentials: true } });
   const PORT = parseInt(process.env.PORT || '3000', 10);
   app.use(express.json({ limit: '50mb' }));
 
