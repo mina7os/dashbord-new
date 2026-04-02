@@ -141,6 +141,25 @@ async function getActiveChatConfig(userId: string, chatId: string) {
   return data;
 }
 
+async function getLightweightChats(client: WhatsAppClient): Promise<Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }>> {
+  return client.pupPage.evaluate(() => {
+    try {
+      const models = window.require('WAWebCollections').Chat.getModelsArray();
+      return models
+        .map((chat: any) => {
+          const id = chat?.id?._serialized || chat?.id?.toString?.() || '';
+          const name = chat?.formattedTitle || chat?.name || id || 'Unknown Chat';
+          const isGroup = Boolean(chat?.groupMetadata || chat?.isGroup);
+          const unreadCount = Number(chat?.unreadCount || 0);
+          return { id, name, isGroup, unreadCount };
+        })
+        .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
+    } catch (error: any) {
+      throw new Error(error?.message || 'Failed to read WhatsApp chat collection');
+    }
+  });
+}
+
 // -----------------------------
 // Main Manager
 // -----------------------------
@@ -514,21 +533,33 @@ export class WhatsAppManager {
     let lastMapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
 
     for (let attempt = 1; attempt <= WA_DISCOVERY_MAX_ATTEMPTS; attempt++) {
-      const chats = await withTimeout<any[]>(
-        client.getChats(),
-        WA_DISCOVERY_TIMEOUT_MS,
-        'Chat discovery timed out. WhatsApp is connected, but chat loading took too long. Please try again in a few seconds.'
-      );
-      const mapped = await Promise.all(chats.map(async (c: any) => ({
-        id: c.id._serialized,
-        name: await resolveChatDisplayName(c),
-        isGroup: Boolean(c.isGroup),
-        unreadCount: Number(c.unreadCount || 0)
-      })));
+      let mapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
+
+      try {
+        const chats = await withTimeout<any[]>(
+          client.getChats(),
+          WA_DISCOVERY_TIMEOUT_MS,
+          'Chat discovery timed out. WhatsApp is connected, but chat loading took too long. Please try again in a few seconds.'
+        );
+        mapped = await Promise.all(chats.map(async (c: any) => ({
+          id: c.id._serialized,
+          name: await resolveChatDisplayName(c),
+          isGroup: Boolean(c.isGroup),
+          unreadCount: Number(c.unreadCount || 0)
+        })));
+      } catch (primaryError: any) {
+        console.warn(`[WhatsApp | ${userId}] getChats() failed on attempt ${attempt}:`, primaryError?.message || primaryError);
+        mapped = await withTimeout(
+          getLightweightChats(client),
+          WA_DISCOVERY_TIMEOUT_MS,
+          'Chat discovery fallback timed out. Please try again in a few seconds.'
+        );
+      }
 
       lastMapped = mapped;
       if (mapped.length > 0) {
         this.cachedChats.set(userId, mapped);
+        console.log(`[WhatsApp | ${userId}] Chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
         return mapped;
       }
 
@@ -537,6 +568,7 @@ export class WhatsAppManager {
       }
     }
 
+    console.warn(`[WhatsApp | ${userId}] Chat discovery returned no chats after ${WA_DISCOVERY_MAX_ATTEMPTS} attempts.`);
     this.cachedChats.delete(userId);
     return lastMapped;
   }
