@@ -416,6 +416,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
+    deps.whatsapp.triggerActiveChatSync(req.user.id);
     res.json(deps.whatsapp.getStatus(req.user.id));
   });
 

@@ -230,6 +230,13 @@ export class WhatsAppManager {
     return this.states.get(userId) || { status: 'disconnected' };
   }
 
+  triggerActiveChatSync(userId: string) {
+    const client = this.activeClients.get(userId);
+    if (!client) return;
+    if (this.getStatus(userId).status !== 'ready') return;
+    void this.syncActiveChats(userId, client);
+  }
+
   private getReadyClient(userId: string): WhatsAppClient {
     const client = this.activeClients.get(userId);
     if (!client || this.getStatus(userId).status !== 'ready') {
