@@ -231,9 +231,8 @@ export class WhatsAppManager {
   }
 
   triggerActiveChatSync(userId: string) {
-    const client = this.activeClients.get(userId);
+    const client = this.getSyncClient(userId);
     if (!client) return;
-    if (this.getStatus(userId).status !== 'ready') return;
     void this.syncActiveChats(userId, client);
   }
 
@@ -243,6 +242,10 @@ export class WhatsAppManager {
       throw new Error('WhatsApp instance is not fully ready. Please wait for the green status.');
     }
     return client;
+  }
+
+  private getSyncClient(userId: string): WhatsAppClient | null {
+    return this.activeClients.get(userId) || this.initializingClients.get(userId) || null;
   }
 
   private async assertActiveChat(userId: string, chatId: string): Promise<void> {
@@ -447,12 +450,14 @@ export class WhatsAppManager {
       if (this.generations.get(userId) !== currentGen) return;
       this.setStageTimer(userId, 'loading', 120000);
       this.emitState(userId, 'loading', { status: 'loading', percent, message });
+      this.startActiveChatSync(userId, client);
     });
 
     client.on('authenticated', () => {
       if (this.generations.get(userId) !== currentGen) return;
       this.clearStageTimer(userId);
       this.emitState(userId, 'auth', { status: 'authenticated' });
+      this.startActiveChatSync(userId, client);
     });
 
     client.on('auth_failure', (msg: string) => {
@@ -767,7 +772,8 @@ export class WhatsAppManager {
   }
 
   private async syncActiveChats(userId: string, client: WhatsAppClient) {
-    if (this.getStatus(userId).status !== 'ready') return;
+    const state = this.getStatus(userId).status;
+    if (!['ready', 'loading', 'authenticated'].includes(state)) return;
 
     const { data: activeChats, error } = await supabaseAdmin
       .from('whatsapp_connected_chats')
