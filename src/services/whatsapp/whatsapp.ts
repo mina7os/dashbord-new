@@ -160,6 +160,38 @@ async function getLightweightChats(client: WhatsAppClient): Promise<Array<{ id: 
   });
 }
 
+async function getLightweightContacts(client: WhatsAppClient): Promise<Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }>> {
+  return client.pupPage.evaluate(() => {
+    try {
+      const models = window.require('WAWebCollections').Contact.getModelsArray();
+      return models
+        .map((contact: any) => {
+          const id = contact?.id?._serialized || '';
+          const name =
+            contact?.formattedName ||
+            contact?.pushname ||
+            contact?.name ||
+            contact?.shortName ||
+            id ||
+            'Unknown Contact';
+          return {
+            id,
+            name,
+            isGroup: false,
+            unreadCount: 0,
+            isWAContact: Boolean(contact?.isWAContact),
+            isMyContact: Boolean(contact?.isMyContact),
+            isMe: Boolean(contact?.isMe),
+          };
+        })
+        .filter((contact: any) => contact.id.endsWith('@c.us') && contact.isWAContact && !contact.isMe)
+        .map(({ id, name, isGroup, unreadCount }: any) => ({ id, name, isGroup, unreadCount }));
+    } catch (error: any) {
+      throw new Error(error?.message || 'Failed to read WhatsApp contact collection');
+    }
+  });
+}
+
 // -----------------------------
 // Main Manager
 // -----------------------------
@@ -549,11 +581,22 @@ export class WhatsAppManager {
         })));
       } catch (primaryError: any) {
         console.warn(`[WhatsApp | ${userId}] getChats() failed on attempt ${attempt}:`, primaryError?.message || primaryError);
-        mapped = await withTimeout(
-          getLightweightChats(client),
-          WA_DISCOVERY_TIMEOUT_MS,
-          'Chat discovery fallback timed out. Please try again in a few seconds.'
-        );
+        try {
+          mapped = await withTimeout(
+            getLightweightChats(client),
+            WA_DISCOVERY_TIMEOUT_MS,
+            'Chat discovery fallback timed out. Please try again in a few seconds.'
+          );
+          console.log(`[WhatsApp | ${userId}] Lightweight chat fallback returned ${mapped.length} chats on attempt ${attempt}.`);
+        } catch (fallbackError: any) {
+          console.warn(`[WhatsApp | ${userId}] Lightweight chat fallback failed on attempt ${attempt}:`, fallbackError?.message || fallbackError);
+          mapped = await withTimeout(
+            getLightweightContacts(client),
+            10000,
+            'Contact discovery fallback timed out. Please try again in a few seconds.'
+          );
+          console.log(`[WhatsApp | ${userId}] Contact fallback returned ${mapped.length} contacts on attempt ${attempt}.`);
+        }
       }
 
       lastMapped = mapped;
