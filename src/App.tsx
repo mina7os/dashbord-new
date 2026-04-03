@@ -10,7 +10,8 @@ import { supabase } from './lib/supabase';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Transaction {
-  id: string;
+  id?: string;
+  record_id?: string | number;
   created_at: string;
   transaction_date: string;
   amount: number;
@@ -41,6 +42,10 @@ interface QueueItem {
   attempt_count: number;
   last_error?: string;
   received_at: string;
+}
+
+function getTransactionRowKey(tx: Transaction) {
+  return String(tx.record_id ?? tx.id ?? tx.reference_number ?? tx.created_at);
 }
 
 interface Stats {
@@ -477,7 +482,10 @@ export default function App() {
 
       setAccess(ctxRes.access || null);
       setAccessibleSheets(ctxRes.accessibleSheets || []);
-      setTransactions(txRes.transactions || []);
+      setTransactions((txRes.transactions || []).map((tx: any) => ({
+        ...tx,
+        id: tx.id ?? (tx.record_id != null ? String(tx.record_id) : undefined),
+      })));
       setReviewQueue(rqRes.reviewQueue || []);
       setIncomingQueue(iqRes.queue || []);
       setStats(statsRes.stats);
@@ -758,6 +766,12 @@ export default function App() {
   const canSeeIntegrations = access?.role === 'manager';
 
   useEffect(() => {
+    if (page > 0 && totalPages > 0 && page >= totalPages) {
+      setPage(totalPages - 1);
+    }
+  }, [page, totalPages]);
+
+  useEffect(() => {
     if (tab === 'review' && !canSeeReview) setTab('transactions');
     if (tab === 'queue' && !canSeeQueue) setTab('transactions');
     if (tab === 'integrations' && !canSeeIntegrations) setTab('transactions');
@@ -999,7 +1013,7 @@ export default function App() {
                   </thead>
                   <tbody>
                     {paginatedTransactions.map(tx => (
-                      <tr key={tx.id}>
+                      <tr key={getTransactionRowKey(tx)}>
                         <td style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{tx.transaction_date || tx.created_at.split('T')[0]}</td>
                         <td>{typeBadge(tx.transaction_type)}</td>
                         <td>

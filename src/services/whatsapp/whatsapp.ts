@@ -68,10 +68,28 @@ function getMessageUniqueId(msg: any): string {
   return msg?.id?.id || msg?.id?._serialized || '';
 }
 
+function normalizeText(value: string): string {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+const AUTOMATED_REPLY_PREFIXES = [
+  'received. the transaction was processed successfully.',
+  'received. transactions were processed successfully.',
+  'received. this transaction was already recorded',
+  'received. the transaction needs manual review',
+  'received, but processing could not be completed automatically.',
+];
+
 function getMessageTimestampISO(msg: any): string | null {
   const raw = Number(msg?.timestamp || 0);
   if (!raw) return null;
   return new Date(raw * 1000).toISOString();
+}
+
+function isKnownAutomatedReplyText(text: string): boolean {
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+  return AUTOMATED_REPLY_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 async function resolveSenderDisplayName(msg: any, client: WhatsAppClient): Promise<string> {
@@ -212,6 +230,7 @@ export class WhatsAppManager {
   private stageTimers: Map<string, NodeJS.Timeout> = new Map();
   private failureCounts: Map<string, number> = new Map();
   private ignoredOutgoingMessages: Map<string, Set<string>> = new Map();
+  private ignoredOutgoingTexts: Map<string, Set<string>> = new Map();
   private activeChatSyncTimers: Map<string, NodeJS.Timeout> = new Map();
 
   private io: Server;
@@ -284,6 +303,7 @@ export class WhatsAppManager {
       clearInterval(syncTimer);
       this.activeChatSyncTimers.delete(userId);
     }
+    this.ignoredOutgoingTexts.delete(userId);
 
     const current = this.states.get(userId) || { status: 'disconnected' as const };
     if (emit) {
@@ -521,11 +541,18 @@ export class WhatsAppManager {
   async handleIncomingMessage(userId: string, msg: any, client: WhatsAppClient, eventName: string = 'message_create'): Promise<'captured' | 'skipped' | 'failed'> {
     const messageId = getMessageUniqueId(msg);
     const chatId = msg.fromMe ? (msg.to || msg.from) : msg.from;
+    const rawText = getRawMessageText(msg);
     
     if (msg.fromMe) console.log(`[WhatsApp | ${userId}] 📥 Self-Message Intake via ${eventName}: ID=${messageId} chatId=${chatId}`);
     console.log(`[WhatsApp | ${userId}] 📨 Incoming msg via ${eventName} chatId=${chatId} fromMe=${msg.fromMe} hasMedia=${msg.hasMedia}`);
     if (!messageId || !chatId) return 'skipped';
     if (msg.fromMe && this.isIgnoredOutgoingMessage(userId, messageId)) {
+      return 'skipped';
+    }
+    if (msg.fromMe && this.isIgnoredOutgoingText(userId, rawText)) {
+      return 'skipped';
+    }
+    if (msg.fromMe && isKnownAutomatedReplyText(rawText)) {
       return 'skipped';
     }
 
@@ -551,7 +578,6 @@ export class WhatsAppManager {
       }
 
       const senderDisplayName = await resolveSenderDisplayName(msg, client);
-      const rawText = getRawMessageText(msg);
       const hadMedia = Boolean(msg.hasMedia);
       
       let mediaUrl, actualMimeType, lastError;
@@ -681,6 +707,7 @@ export class WhatsAppManager {
       const client = await this.waitForReadyClient(userId);
       const sent = await client.sendMessage(chatId, trimmed);
       const sentId = getMessageUniqueId(sent);
+      this.rememberIgnoredOutgoingText(userId, trimmed);
       if (sentId) {
         const bucket = this.ignoredOutgoingMessages.get(userId) || new Set<string>();
         bucket.add(sentId);
@@ -716,6 +743,27 @@ export class WhatsAppManager {
     if (!bucket) return false;
     if (!bucket.has(messageId)) return false;
     bucket.delete(messageId);
+    return true;
+  }
+
+  private rememberIgnoredOutgoingText(userId: string, text: string) {
+    const normalized = normalizeText(text);
+    if (!normalized) return;
+    const bucket = this.ignoredOutgoingTexts.get(userId) || new Set<string>();
+    bucket.add(normalized);
+    this.ignoredOutgoingTexts.set(userId, bucket);
+    setTimeout(() => {
+      const current = this.ignoredOutgoingTexts.get(userId);
+      current?.delete(normalized);
+    }, 10 * 60 * 1000);
+  }
+
+  private isIgnoredOutgoingText(userId: string, text: string): boolean {
+    const normalized = normalizeText(text);
+    if (!normalized) return false;
+    const bucket = this.ignoredOutgoingTexts.get(userId);
+    if (!bucket?.has(normalized)) return false;
+    bucket.delete(normalized);
     return true;
   }
 
