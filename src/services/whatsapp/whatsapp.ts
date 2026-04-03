@@ -454,11 +454,24 @@ export class WhatsAppManager {
       this.handleConnectionFailure(userId, `Disconnected: ${reason}`);
     });
 
-    client.on('message_create', async (msg: any) => {
+    const onIncoming = async (eventName: string, msg: any) => {
       if (this.generations.get(userId) !== currentGen) return;
-      // Safety check: Only process messages if actively ready
-      if (!this.activeClients.has(userId)) return;
-      await this.handleIncomingMessage(userId, msg, client);
+
+      const state = this.getStatus(userId).status;
+      if (!['ready', 'loading', 'authenticated'].includes(state)) {
+        console.log(`[WhatsApp | ${userId}] Skipping ${eventName} while state=${state}`);
+        return;
+      }
+
+      await this.handleIncomingMessage(userId, msg, client, eventName);
+    };
+
+    client.on('message', async (msg: any) => {
+      await onIncoming('message', msg);
+    });
+
+    client.on('message_create', async (msg: any) => {
+      await onIncoming('message_create', msg);
     });
   }
 
@@ -483,12 +496,12 @@ export class WhatsAppManager {
     this.initializingClients.delete(userId);
   }
 
-  async handleIncomingMessage(userId: string, msg: any, client: WhatsAppClient): Promise<'captured' | 'skipped' | 'failed'> {
+  async handleIncomingMessage(userId: string, msg: any, client: WhatsAppClient, eventName: string = 'message_create'): Promise<'captured' | 'skipped' | 'failed'> {
     const messageId = getMessageUniqueId(msg);
     const chatId = msg.from;
     
-    if (msg.fromMe) console.log(`[WhatsApp | ${userId}] 📥 Self-Message Intake: ID=${messageId} chatId=${chatId}`);
-    console.log(`[WhatsApp | ${userId}] 📨 Incoming msg chatId=${chatId} fromMe=${msg.fromMe} hasMedia=${msg.hasMedia}`);
+    if (msg.fromMe) console.log(`[WhatsApp | ${userId}] 📥 Self-Message Intake via ${eventName}: ID=${messageId} chatId=${chatId}`);
+    console.log(`[WhatsApp | ${userId}] 📨 Incoming msg via ${eventName} chatId=${chatId} fromMe=${msg.fromMe} hasMedia=${msg.hasMedia}`);
     if (!messageId || !chatId) return 'skipped';
     if (msg.fromMe && this.isIgnoredOutgoingMessage(userId, messageId)) {
       return 'skipped';
