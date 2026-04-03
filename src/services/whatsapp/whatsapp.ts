@@ -520,7 +520,7 @@ export class WhatsAppManager {
 
   async handleIncomingMessage(userId: string, msg: any, client: WhatsAppClient, eventName: string = 'message_create'): Promise<'captured' | 'skipped' | 'failed'> {
     const messageId = getMessageUniqueId(msg);
-    const chatId = msg.from;
+    const chatId = msg.fromMe ? (msg.to || msg.from) : msg.from;
     
     if (msg.fromMe) console.log(`[WhatsApp | ${userId}] 📥 Self-Message Intake via ${eventName}: ID=${messageId} chatId=${chatId}`);
     console.log(`[WhatsApp | ${userId}] 📨 Incoming msg via ${eventName} chatId=${chatId} fromMe=${msg.fromMe} hasMedia=${msg.hasMedia}`);
@@ -536,7 +536,7 @@ export class WhatsAppManager {
     try {
       const chatConfig = await getActiveChatConfig(userId, chatId);
       if (!chatConfig) {
-        console.log(`[WhatsApp | ${userId}] ⚠️ SKIPPED — chatId=${chatId} is not a configured source. Go to Configure Sources and add this chat.`);
+        console.log(`[WhatsApp | ${userId}] ⚠️ SKIPPED — chatId=${chatId} is not a configured source. from=${msg.from || ''} to=${msg.to || ''}`);
         return 'skipped';
       }
 
@@ -764,16 +764,18 @@ export class WhatsAppManager {
     if (existingTimer) clearInterval(existingTimer);
 
     const timer = setInterval(() => {
-      void this.syncActiveChats(userId, client);
+      void this.syncActiveChats(userId);
     }, WA_ACTIVE_CHAT_SYNC_INTERVAL_MS) as unknown as NodeJS.Timeout;
 
     this.activeChatSyncTimers.set(userId, timer);
-    void this.syncActiveChats(userId, client);
+    void this.syncActiveChats(userId);
   }
 
-  private async syncActiveChats(userId: string, client: WhatsAppClient) {
+  private async syncActiveChats(userId: string, forcedClient?: WhatsAppClient) {
     const state = this.getStatus(userId).status;
     if (!['ready', 'loading', 'authenticated'].includes(state)) return;
+    const client = forcedClient || this.getSyncClient(userId);
+    if (!client) return;
 
     const { data: activeChats, error } = await supabaseAdmin
       .from('whatsapp_connected_chats')
@@ -782,6 +784,7 @@ export class WhatsAppManager {
       .eq('is_active', true);
 
     if (error || !activeChats?.length) return;
+    console.log(`[WhatsApp | ${userId}] Active chat sync scanning ${activeChats.length} configured chat(s) while state=${state}.`);
 
     const cutoffTs = Math.floor(Date.now() / 1000) - WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS;
 
