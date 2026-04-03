@@ -37,6 +37,7 @@ export class MessageProcessor {
   private processingUsers: Set<string> = new Set();
   private circuitBreakers: Map<string, number> = new Map();
   private replySender?: (userId: string, chatId: string, text: string) => Promise<void>;
+  private replyAfterPersistWaitMs = 1200;
 
   public start(userId: string) {
     if (this.usersPolling.has(userId)) return;
@@ -243,10 +244,12 @@ export class MessageProcessor {
       if (result.status === 'LOW_CONFIDENCE' || reviewRequired) {
         await incrementMetric(userId, 'pending_review');
         await markReviewRequired(row.id, result.review_reason || 'Needs review', result.confidence);
+        await this.waitForReviewVisible(userId, row.message_id);
         this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
       } else {
         await incrementMetric(userId, 'successful_extractions');
         await markCompletedTransaction(row.id, { isFinancial: true, transactionCount: result.transactions.length });
+        await this.waitForTransactionsVisible(userId, row.message_id, result.transactions.length);
         this.sendReplySafe(userId, row.chat_id, this.buildSuccessReply(result.transactions.length));
       }
     } else {
@@ -260,6 +263,39 @@ export class MessageProcessor {
     void this.replySender(userId, chatId, text).catch((err) => {
       console.warn(`[MessageProcessor | ${userId}] Auto-reply skipped:`, err?.message || err);
     });
+  }
+
+  private async waitForTransactionsVisible(userId: string, messageId: string, minimumCount: number) {
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      const { data, error } = await supabaseAdmin
+        .from('transactions')
+        .select('record_id')
+        .eq('user_id', userId)
+        .eq('message_id', messageId);
+
+      if (!error && (data?.length || 0) >= Math.max(1, minimumCount)) {
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.replyAfterPersistWaitMs));
+    }
+  }
+
+  private async waitForReviewVisible(userId: string, messageId: string) {
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      const { data, error } = await supabaseAdmin
+        .from('review_queue')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('message_id', messageId)
+        .eq('review_status', 'pending');
+
+      if (!error && (data?.length || 0) > 0) {
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.replyAfterPersistWaitMs));
+    }
   }
 
   private buildSuccessReply(transactionCount: number) {

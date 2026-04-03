@@ -17,6 +17,8 @@ const WA_STARTUP_TIMEOUT_MS = Number(process.env.WA_STARTUP_TIMEOUT_MS || 180000
 const WA_DISCOVERY_TIMEOUT_MS = Number(process.env.WA_DISCOVERY_TIMEOUT_MS || 25000);
 const WA_DISCOVERY_RETRY_DELAY_MS = Number(process.env.WA_DISCOVERY_RETRY_DELAY_MS || 3000);
 const WA_DISCOVERY_MAX_ATTEMPTS = Number(process.env.WA_DISCOVERY_MAX_ATTEMPTS || 3);
+const WA_REPLY_READY_WAIT_MS = Number(process.env.WA_REPLY_READY_WAIT_MS || 2500);
+const WA_REPLY_READY_ATTEMPTS = Number(process.env.WA_REPLY_READY_ATTEMPTS || 6);
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
@@ -631,7 +633,7 @@ export class WhatsAppManager {
     if (!trimmed) return;
 
     try {
-      const client = this.getReadyClient(userId);
+      const client = await this.waitForReadyClient(userId);
       const sent = await client.sendMessage(chatId, trimmed);
       const sentId = getMessageUniqueId(sent);
       if (sentId) {
@@ -644,6 +646,24 @@ export class WhatsAppManager {
     } catch (err: any) {
       console.warn(`[WhatsApp | ${userId}] Auto reply failed:`, err.message || err);
     }
+  }
+
+  private async waitForReadyClient(userId: string): Promise<WhatsAppClient> {
+    for (let attempt = 1; attempt <= WA_REPLY_READY_ATTEMPTS; attempt++) {
+      const client = this.activeClients.get(userId);
+      const state = this.getStatus(userId).status;
+      if (client && state === 'ready') {
+        return client;
+      }
+
+      if (!['loading', 'authenticated', 'initializing', 'reconnecting', 'ready'].includes(state)) {
+        break;
+      }
+
+      await sleep(WA_REPLY_READY_WAIT_MS);
+    }
+
+    return this.getReadyClient(userId);
   }
 
   private isIgnoredOutgoingMessage(userId: string, messageId: string): boolean {
