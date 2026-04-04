@@ -8,7 +8,7 @@ import { Search, RefreshCw, Check, X, AlertCircle, TrendingUp, Wallet, Clock, Se
 import Integrations from './components/Integrations';
 import { supabase } from './lib/supabase';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interface Transaction {
   id?: string;
   record_id?: string | number;
@@ -18,6 +18,7 @@ interface Transaction {
   currency: string;
   sender_name: string;
   beneficiary_name: string;
+  client_name?: string;
   transaction_type: string;
   channel: string;
   processing_status: string;
@@ -67,6 +68,17 @@ interface Toast {
   type: 'success' | 'error' | 'info';
 }
 
+interface TransactionFilters {
+  dateFrom: string;
+  dateTo: string;
+  type: string;
+  bank: string;
+  status: string;
+  currency: string;
+  sender: string;
+  receiver: string;
+}
+
 interface AccessState {
   role: 'manager' | 'cfo' | 'admin' | 'viewer';
   canReadAllData: boolean;
@@ -79,8 +91,18 @@ interface AccessState {
 }
 
 const ITEMS_PER_PAGE = 25;
+const EMPTY_TRANSACTION_FILTERS: TransactionFilters = {
+  dateFrom: '',
+  dateTo: '',
+  type: '',
+  bank: '',
+  status: '',
+  currency: '',
+  sender: '',
+  receiver: '',
+};
 
-// ─── Toast Component ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Toast Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: string) => void }) {
   return (
     <div style={{ position: 'fixed', bottom: '2rem', right: '2rem', zIndex: 9999, display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -106,7 +128,7 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
   );
 }
 
-// ─── Review Item Modal ────────────────────────────────────────────────────────
+// â”€â”€â”€ Review Item Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ReviewModal({ item, token, onClose, onAction, requireComment = false }: {
   item: ReviewItem; token: string;
   onClose: () => void;
@@ -163,7 +185,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
             {Object.entries(item.suggested_data || {}).filter(([k]) => !['user_id', 'duplicate', 'processing_status', 'source_document_type', 'raw_text'].includes(k)).map(([k, v]) => (
               <div key={k} style={{ background: 'var(--surface2)', padding: '8px 12px', borderRadius: '8px' }}>
                 <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase' }}>{k.replace(/_/g, ' ')}</div>
-                <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 500 }}>{String(v ?? '—')}</div>
+                <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 500 }}>{String(v ?? '-')}</div>
               </div>
             ))}
           </div>
@@ -220,7 +242,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
   );
 }
 
-// ─── Inspector Modal ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Inspector Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function InspectorModal({ id, token, onClose }: { id: string; token: string; onClose: () => void }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -324,7 +346,7 @@ function InspectorModal({ id, token, onClose }: { id: string; token: string; onC
   );
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Main App â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const sessionRef = useRef<Session | null>(null); // Fix H5: stale closure
@@ -338,6 +360,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
+  const [transactionFilters, setTransactionFilters] = useState<TransactionFilters>(EMPTY_TRANSACTION_FILTERS);
   const [authStatus, setAuthStatus] = useState<string>('');
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [page, setPage] = useState(0);
@@ -371,7 +394,7 @@ export default function App() {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
-  // ─── Auth ──────────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     const recoverSession = async () => {
       const params = new URLSearchParams(window.location.search);
@@ -444,10 +467,10 @@ export default function App() {
     });
 
     return () => subscription.unsubscribe();
-    // No debug global click listener — removed M3
+    // No debug global click listener â€” removed M3
   }, []);
 
-  // ─── Data Loading ──────────────────────────────────────────────────────────
+  // â”€â”€â”€ Data Loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const loadData = useCallback(async (showLoading = true) => {
     const currentSession = sessionRef.current; // Fix H5: use ref, not stale state
     if (!currentSession) return;
@@ -501,7 +524,7 @@ export default function App() {
     }
   }, [addToast]);
 
-  // ─── Realtime Subscription (replaces 30s polling) ─────────────────────────
+  // â”€â”€â”€ Realtime Subscription (replaces 30s polling) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!session?.user?.id) return;
     if (access?.canReadAllData) return;
@@ -562,7 +585,7 @@ export default function App() {
     };
   }, [session?.user?.id, loadData]);
 
-  // ─── Integration Status Sync ──────────────────────────────────────────────
+  // â”€â”€â”€ Integration Status Sync â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   useEffect(() => {
     if (!session) return;
 
@@ -686,7 +709,7 @@ export default function App() {
     }
   };
 
-  // ─── Auth Actions ──────────────────────────────────────────────────────────
+  // â”€â”€â”€ Auth Actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleLogin = async () => {
     setAuthStatus('Starting Google connection...');
     const { error } = await supabase.auth.signInWithOAuth({
@@ -703,7 +726,7 @@ export default function App() {
     });
     if (error) {
       const msg = error.message.includes('provider is not enabled')
-        ? '❌ Google provider not enabled in Supabase Dashboard → Authentication → Providers → Google'
+        ? 'Google provider not enabled in Supabase Dashboard -> Authentication -> Providers -> Google'
         : `OAuth Error: ${error.message}`;
       setAuthStatus(msg);
     } else {
@@ -713,7 +736,7 @@ export default function App() {
 
   const handleLogout = () => supabase.auth.signOut();
 
-  // ─── Review Queue Actions ──────────────────────────────────────────────────
+  // â”€â”€â”€ Review Queue Actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleReviewAction = useCallback(async (
     itemId: string,
     action: 'approve' | 'reject' | 'edit',
@@ -745,16 +768,69 @@ export default function App() {
     }
   }, [session, addToast]);
 
-  // ─── Derived State ────────────────────────────────────────────────────────
+  // â”€â”€â”€ Derived State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const updateTransactionFilter = useCallback((key: keyof TransactionFilters, value: string) => {
+    setTransactionFilters(prev => ({ ...prev, [key]: value }));
+    setPage(0);
+  }, []);
+
+  const clearTransactionFilters = useCallback(() => {
+    setTransactionFilters(EMPTY_TRANSACTION_FILTERS);
+    setSearch('');
+    setPage(0);
+  }, []);
+
   const filteredTransactions = useMemo(() => {
     const s = search.toLowerCase();
     return transactions.filter(tx =>
-      tx.sender_name?.toLowerCase().includes(s) ||
-      tx.beneficiary_name?.toLowerCase().includes(s) ||
-      tx.reference_number?.toLowerCase().includes(s) ||
-      tx.bank_name?.toLowerCase().includes(s)
+      (!s || [
+        tx.sender_name,
+        tx.beneficiary_name,
+        tx.client_name,
+        tx.reference_number,
+        tx.bank_name,
+        tx.transaction_type,
+        tx.channel,
+      ].some(value => String(value || '').toLowerCase().includes(s))) &&
+      (!transactionFilters.dateFrom || String(tx.transaction_date || tx.created_at).slice(0, 10) >= transactionFilters.dateFrom) &&
+      (!transactionFilters.dateTo || String(tx.transaction_date || tx.created_at).slice(0, 10) <= transactionFilters.dateTo) &&
+      (!transactionFilters.type || String(tx.transaction_type || '') === transactionFilters.type) &&
+      (!transactionFilters.bank || String(tx.bank_name || '') === transactionFilters.bank) &&
+      (!transactionFilters.status || String(tx.processing_status || '') === transactionFilters.status) &&
+      (!transactionFilters.currency || String(tx.currency || '') === transactionFilters.currency) &&
+      (!transactionFilters.sender || String(tx.sender_name || '').toLowerCase().includes(transactionFilters.sender.toLowerCase())) &&
+      (!transactionFilters.receiver || [tx.beneficiary_name, tx.client_name].some(value => String(value || '').toLowerCase().includes(transactionFilters.receiver.toLowerCase())))
     );
-  }, [transactions, search]);
+  }, [transactions, search, transactionFilters]);
+
+  const transactionFilterOptions = useMemo(() => ({
+    types: Array.from(new Set(transactions.map(tx => String(tx.transaction_type || '')).filter(Boolean))).sort(),
+    banks: Array.from(new Set(transactions.map(tx => String(tx.bank_name || '')).filter(Boolean))).sort(),
+    statuses: Array.from(new Set(transactions.map(tx => String(tx.processing_status || '')).filter(Boolean))).sort(),
+    currencies: Array.from(new Set(transactions.map(tx => String(tx.currency || '')).filter(Boolean))).sort(),
+  }), [transactions]);
+
+  const bankSummaries = useMemo(() => {
+    const summaries = new Map<string, { bank: string; inflow: number; outflow: number; net: number; currency: string; count: number }>();
+
+    for (const tx of filteredTransactions) {
+      const bank = tx.bank_name || 'Unknown Bank';
+      const currency = tx.currency || 'EGP';
+      const current = summaries.get(bank) || { bank, inflow: 0, outflow: 0, net: 0, currency, count: 0 };
+      const amount = Number(tx.amount) || 0;
+      const type = String(tx.transaction_type || '').toLowerCase();
+      const isOutflow = ['transfer', 'instapay', 'withdrawal', 'debit'].includes(type);
+
+      if (isOutflow) current.outflow += amount;
+      else current.inflow += amount;
+
+      current.net = current.inflow - current.outflow;
+      current.count += 1;
+      summaries.set(bank, current);
+    }
+
+    return Array.from(summaries.values()).sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+  }, [filteredTransactions]);
 
   const paginatedTransactions = useMemo(() =>
     filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
@@ -777,7 +853,7 @@ export default function App() {
     if (tab === 'integrations' && !canSeeIntegrations) setTab('transactions');
   }, [tab, canSeeReview, canSeeQueue, canSeeIntegrations]);
 
-  // ─── Badges ───────────────────────────────────────────────────────────────
+  // â”€â”€â”€ Badges â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const statusBadge = (status: string) => {
     switch (status) {
       case 'completed':
@@ -798,15 +874,15 @@ export default function App() {
       case 'transfer': return <span className="badge-pill badge-transfer">Transfer</span>;
       case 'deposit': return <span className="badge-pill badge-deposit">Deposit</span>;
       case 'instapay': return <span className="badge-pill" style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}>InstaPay</span>;
-      default: return <span className="badge-pill">{type || '—'}</span>;
+      default: return <span className="badge-pill">{type || '-'}</span>;
     }
   };
 
-  // ─── Loading / Auth States ─────────────────────────────────────────────────
+  // â”€â”€â”€ Loading / Auth States â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   if (loading) {
     return (
       <div className="loading">
-        <div className="spinner" /> Booting Dashboard…
+        <div className="spinner" /> Booting Dashboard...
       </div>
     );
   }
@@ -823,7 +899,7 @@ export default function App() {
             <Wallet size={48} color="var(--accent)" />
           </div>
           <h1 style={{ marginBottom: '0.75rem', fontSize: '1.75rem' }}>Financial Dashboard</h1>
-          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '1.5rem', letterSpacing: '0.1em' }}>v2.0 · Production</div>
+          <div style={{ fontSize: '0.7rem', color: 'var(--muted)', marginBottom: '1.5rem', letterSpacing: '0.1em' }}>v2.0 - Production</div>
           <p style={{ color: 'var(--muted)', marginBottom: '2.5rem', lineHeight: '1.6' }}>
             AI-powered WhatsApp financial transaction extraction and management platform.
           </p>
@@ -855,7 +931,7 @@ export default function App() {
     );
   }
 
-  // ─── Main Dashboard ────────────────────────────────────────────────────────
+  // â”€â”€â”€ Main Dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   return (
     <div className="app">
       <header className="header">
@@ -958,7 +1034,7 @@ export default function App() {
                   {/* Fixed M5: show 0% not 100% on empty state */}
                   {stats && stats.total_messages > 0
                     ? `${Math.round((stats.successful_extractions / stats.total_messages) * 100)}%`
-                    : '—'}
+                    : '-'}
                 </div>
               </div>
               <div className="stat-card glass">
@@ -1001,6 +1077,58 @@ export default function App() {
         {/* Transactions Tab */}
         {tab === 'transactions' && (
           <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
+              {bankSummaries.length === 0 ? (
+                <div className="stat-card glass" style={{ padding: '1rem' }}>
+                  <div className="label">Bank Summary</div>
+                  <div className="sub">No filtered transactions available.</div>
+                </div>
+              ) : bankSummaries.map(summary => (
+                <div key={summary.bank} className="stat-card glass" style={{ padding: '1rem' }}>
+                  <div className="label">{summary.bank}</div>
+                  <div style={{ fontSize: '1.15rem', fontWeight: 700, color: summary.net >= 0 ? 'var(--green)' : 'var(--red)', marginBottom: '0.35rem' }}>
+                    Net {summary.net.toLocaleString()} {summary.currency}
+                  </div>
+                  <div className="sub">Income {summary.inflow.toLocaleString()} {summary.currency}</div>
+                  <div className="sub">Outflow {summary.outflow.toLocaleString()} {summary.currency}</div>
+                  <div className="sub">{summary.count} transactions</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="stat-card glass" style={{ padding: '1rem', marginBottom: '1rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', gap: '1rem', flexWrap: 'wrap' }}>
+                <div>
+                  <div className="label">Transaction Filters</div>
+                  <div className="sub">Date, type, bank, status, sender, and receiver filters.</div>
+                </div>
+                <button onClick={clearTransactionFilters} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 12px', color: 'var(--text)', cursor: 'pointer' }}>
+                  Clear Filters
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
+                <input type="date" value={transactionFilters.dateFrom} onChange={e => updateTransactionFilter('dateFrom', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }} />
+                <input type="date" value={transactionFilters.dateTo} onChange={e => updateTransactionFilter('dateTo', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }} />
+                <select value={transactionFilters.type} onChange={e => updateTransactionFilter('type', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }}>
+                  <option value="">All Types</option>
+                  {transactionFilterOptions.types.map(type => <option key={type} value={type}>{type}</option>)}
+                </select>
+                <select value={transactionFilters.bank} onChange={e => updateTransactionFilter('bank', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }}>
+                  <option value="">All Banks</option>
+                  {transactionFilterOptions.banks.map(bank => <option key={bank} value={bank}>{bank}</option>)}
+                </select>
+                <select value={transactionFilters.status} onChange={e => updateTransactionFilter('status', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }}>
+                  <option value="">All Statuses</option>
+                  {transactionFilterOptions.statuses.map(status => <option key={status} value={status}>{status}</option>)}
+                </select>
+                <select value={transactionFilters.currency} onChange={e => updateTransactionFilter('currency', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }}>
+                  <option value="">All Currencies</option>
+                  {transactionFilterOptions.currencies.map(currency => <option key={currency} value={currency}>{currency}</option>)}
+                </select>
+                <input type="text" placeholder="Sender" value={transactionFilters.sender} onChange={e => updateTransactionFilter('sender', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }} />
+                <input type="text" placeholder="Receiver / Company" value={transactionFilters.receiver} onChange={e => updateTransactionFilter('receiver', e.target.value)} style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '9px 10px', color: 'var(--text)' }} />
+              </div>
+            </div>
             <div className="table-wrap">
               {paginatedTransactions.length === 0 ? (
                 <div className="empty">{search ? 'No transactions match your search.' : 'No transactions yet. Connect WhatsApp to start ingesting data.'}</div>
@@ -1008,7 +1136,7 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Date</th><th>Type</th><th>Details</th><th>Bank / Channel</th><th>Amount</th><th>Status</th>
+                      <th>Date</th><th>Type</th><th>Sender</th><th>Receivers</th><th>Bank / Channel</th><th>Reference</th><th>Amount</th><th>Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1018,11 +1146,17 @@ export default function App() {
                         <td>{typeBadge(tx.transaction_type)}</td>
                         <td>
                           <div style={{ fontWeight: 600 }}>{tx.sender_name || 'Unknown'}</div>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>→ {tx.beneficiary_name || 'N/A'}</div>
+                        </td>
+                        <td>
+                          <div style={{ fontWeight: 600 }}>{tx.beneficiary_name || '—'}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{tx.client_name || '—'}</div>
                         </td>
                         <td>
                           <div>{tx.bank_name || '—'}</div>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{tx.channel}</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{tx.channel || '—'}</div>
+                        </td>
+                        <td style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                          {tx.reference_number || '—'}
                         </td>
                         <td style={{ fontWeight: 700, color: tx.amount > 1000 ? 'var(--accent2)' : 'inherit' }}>
                           {tx.amount?.toLocaleString()} {tx.currency}
@@ -1067,7 +1201,7 @@ export default function App() {
                   {item.suggested_data?.amount && (
                     <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
                       Suggested: <strong style={{ color: 'white' }}>{item.suggested_data.amount} {item.suggested_data.currency || 'EGP'}</strong>
-                      {item.suggested_data.sender_name && <> · {item.suggested_data.sender_name}</>}
+                      {item.suggested_data.sender_name && <> | {item.suggested_data.sender_name}</>}
                     </div>
                   )}
                   <div style={{ marginTop: '0.5rem' }}>
@@ -1084,7 +1218,7 @@ export default function App() {
                   className="tab active"
                   style={{ padding: '6px 14px', fontSize: '0.8rem', marginTop: '0.5rem' }}
                 >
-                  Review →
+                  {'Review ->'}
                 </button>
               </div>
             ))}
