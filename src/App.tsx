@@ -102,6 +102,36 @@ const EMPTY_TRANSACTION_FILTERS: TransactionFilters = {
   receiver: '',
 };
 
+function normalizeEntityName(value?: string | null) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getReceiverIdentity(tx: Transaction) {
+  const candidates = [tx.beneficiary_name, tx.client_name]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+
+  const unique = Array.from(new Set(candidates));
+  if (unique.length === 0) {
+    return { label: 'Unknown Receiver', aliases: [] as string[], key: 'unknown-receiver' };
+  }
+
+  const sorted = [...unique].sort((a, b) => b.length - a.length);
+  const primary = sorted[0];
+  const aliases = sorted.slice(1).filter((alias) => {
+    const normalizedPrimary = normalizeEntityName(primary);
+    const normalizedAlias = normalizeEntityName(alias);
+    return normalizedAlias && normalizedAlias !== normalizedPrimary && !normalizedPrimary.includes(normalizedAlias);
+  });
+
+  const key = [primary, ...aliases].map(normalizeEntityName).join('|');
+  return { label: primary, aliases, key };
+}
+
 // â”€â”€â”€ Toast Component â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: string) => void }) {
   return (
@@ -832,6 +862,47 @@ export default function App() {
     return Array.from(summaries.values()).sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
   }, [filteredTransactions]);
 
+  const receiverSummaries = useMemo(() => {
+    const summaries = new Map<string, {
+      key: string;
+      label: string;
+      aliases: string[];
+      inflow: number;
+      outflow: number;
+      net: number;
+      currency: string;
+      count: number;
+    }>();
+
+    for (const tx of filteredTransactions) {
+      const receiver = getReceiverIdentity(tx);
+      const currency = tx.currency || 'EGP';
+      const current = summaries.get(receiver.key) || {
+        key: receiver.key,
+        label: receiver.label,
+        aliases: receiver.aliases,
+        inflow: 0,
+        outflow: 0,
+        net: 0,
+        currency,
+        count: 0,
+      };
+
+      const amount = Number(tx.amount) || 0;
+      const type = String(tx.transaction_type || '').toLowerCase();
+      const isOutflow = ['transfer', 'instapay', 'withdrawal', 'debit'].includes(type);
+
+      if (isOutflow) current.outflow += amount;
+      else current.inflow += amount;
+
+      current.net = current.inflow - current.outflow;
+      current.count += 1;
+      summaries.set(receiver.key, current);
+    }
+
+    return Array.from(summaries.values()).sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+  }, [filteredTransactions]);
+
   const paginatedTransactions = useMemo(() =>
     filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
     [filteredTransactions, page]
@@ -1087,7 +1158,7 @@ export default function App() {
                 <div key={summary.bank} className="stat-card glass" style={{ padding: '1rem' }}>
                   <div className="label">{summary.bank}</div>
                   <div style={{ fontSize: '1.15rem', fontWeight: 700, color: summary.net >= 0 ? 'var(--green)' : 'var(--red)', marginBottom: '0.35rem' }}>
-                    Net {summary.net.toLocaleString()} {summary.currency}
+                    {summary.net >= 0 ? 'Net Inflow' : 'Net Outflow'} {Math.abs(summary.net).toLocaleString()} {summary.currency}
                   </div>
                   <div className="sub">Income {summary.inflow.toLocaleString()} {summary.currency}</div>
                   <div className="sub">Outflow {summary.outflow.toLocaleString()} {summary.currency}</div>
@@ -1182,6 +1253,40 @@ export default function App() {
                 </button>
               </div>
             )}
+
+            <div className="stat-card glass" style={{ padding: '1rem', marginTop: '1rem' }}>
+              <div style={{ marginBottom: '0.75rem' }}>
+                <div className="label">Receiver Net Totals</div>
+                <div className="sub">Grouped by the receiver/company names found in each transaction.</div>
+              </div>
+              {receiverSummaries.length === 0 ? (
+                <div className="sub">No receiver totals available for the current filters.</div>
+              ) : (
+                <div className="table-wrap" style={{ marginBottom: 0 }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Receiver</th><th>Aliases</th><th>Income</th><th>Outflow</th><th>Net Total</th><th>Count</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {receiverSummaries.map(summary => (
+                        <tr key={summary.key}>
+                          <td style={{ fontWeight: 600 }}>{summary.label}</td>
+                          <td style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{summary.aliases.length > 0 ? summary.aliases.join(' | ') : '-'}</td>
+                          <td>{summary.inflow.toLocaleString()} {summary.currency}</td>
+                          <td>{summary.outflow.toLocaleString()} {summary.currency}</td>
+                          <td style={{ fontWeight: 700, color: summary.net >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                            {summary.net >= 0 ? 'Net Inflow' : 'Net Outflow'} {Math.abs(summary.net).toLocaleString()} {summary.currency}
+                          </td>
+                          <td>{summary.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </>
         )}
 
