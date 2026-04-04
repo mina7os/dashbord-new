@@ -841,25 +841,19 @@ export default function App() {
   }), [transactions]);
 
   const bankSummaries = useMemo(() => {
-    const summaries = new Map<string, { bank: string; inflow: number; outflow: number; net: number; currency: string; count: number }>();
+    const summaries = new Map<string, { bank: string; total: number; currency: string; count: number }>();
 
     for (const tx of filteredTransactions) {
       const bank = tx.bank_name || 'Unknown Bank';
       const currency = tx.currency || 'EGP';
-      const current = summaries.get(bank) || { bank, inflow: 0, outflow: 0, net: 0, currency, count: 0 };
+      const current = summaries.get(bank) || { bank, total: 0, currency, count: 0 };
       const amount = Number(tx.amount) || 0;
-      const type = String(tx.transaction_type || '').toLowerCase();
-      const isOutflow = ['transfer', 'instapay', 'withdrawal', 'debit'].includes(type);
-
-      if (isOutflow) current.outflow += amount;
-      else current.inflow += amount;
-
-      current.net = current.inflow - current.outflow;
+      current.total += Math.abs(amount);
       current.count += 1;
       summaries.set(bank, current);
     }
 
-    return Array.from(summaries.values()).sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+    return Array.from(summaries.values()).sort((a, b) => b.total - a.total);
   }, [filteredTransactions]);
 
   const receiverSummaries = useMemo(() => {
@@ -867,9 +861,7 @@ export default function App() {
       key: string;
       label: string;
       aliases: string[];
-      inflow: number;
-      outflow: number;
-      net: number;
+      total: number;
       currency: string;
       count: number;
     }>();
@@ -881,26 +873,18 @@ export default function App() {
         key: receiver.key,
         label: receiver.label,
         aliases: receiver.aliases,
-        inflow: 0,
-        outflow: 0,
-        net: 0,
+        total: 0,
         currency,
         count: 0,
       };
 
       const amount = Number(tx.amount) || 0;
-      const type = String(tx.transaction_type || '').toLowerCase();
-      const isOutflow = ['transfer', 'instapay', 'withdrawal', 'debit'].includes(type);
-
-      if (isOutflow) current.outflow += amount;
-      else current.inflow += amount;
-
-      current.net = current.inflow - current.outflow;
+      current.total += Math.abs(amount);
       current.count += 1;
       summaries.set(receiver.key, current);
     }
 
-    return Array.from(summaries.values()).sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+    return Array.from(summaries.values()).sort((a, b) => b.total - a.total);
   }, [filteredTransactions]);
 
   const paginatedTransactions = useMemo(() =>
@@ -1157,11 +1141,10 @@ export default function App() {
               ) : bankSummaries.map(summary => (
                 <div key={summary.bank} className="stat-card glass" style={{ padding: '1rem' }}>
                   <div className="label">{summary.bank}</div>
-                  <div style={{ fontSize: '1.15rem', fontWeight: 700, color: summary.net >= 0 ? 'var(--green)' : 'var(--red)', marginBottom: '0.35rem' }}>
-                    {summary.net >= 0 ? 'Net Inflow' : 'Net Outflow'} {Math.abs(summary.net).toLocaleString()} {summary.currency}
+                  <div style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--green)', marginBottom: '0.35rem' }}>
+                    Total Balance {summary.total.toLocaleString()} {summary.currency}
                   </div>
-                  <div className="sub">Income {summary.inflow.toLocaleString()} {summary.currency}</div>
-                  <div className="sub">Outflow {summary.outflow.toLocaleString()} {summary.currency}</div>
+                  <div className="sub">All filtered transactions are shown as positive balance totals.</div>
                   <div className="sub">{summary.count} transactions</div>
                 </div>
               ))}
@@ -1256,7 +1239,7 @@ export default function App() {
 
             <div className="stat-card glass" style={{ padding: '1rem', marginTop: '1rem' }}>
               <div style={{ marginBottom: '0.75rem' }}>
-                <div className="label">Receiver Net Totals</div>
+                <div className="label">Receiver Total Balances</div>
                 <div className="sub">Grouped by the receiver/company names found in each transaction.</div>
               </div>
               {receiverSummaries.length === 0 ? (
@@ -1266,7 +1249,7 @@ export default function App() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Receiver</th><th>Aliases</th><th>Income</th><th>Outflow</th><th>Net Total</th><th>Count</th>
+                        <th>Receiver</th><th>Aliases</th><th>Total Balance</th><th>Count</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1274,10 +1257,8 @@ export default function App() {
                         <tr key={summary.key}>
                           <td style={{ fontWeight: 600 }}>{summary.label}</td>
                           <td style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{summary.aliases.length > 0 ? summary.aliases.join(' | ') : '-'}</td>
-                          <td>{summary.inflow.toLocaleString()} {summary.currency}</td>
-                          <td>{summary.outflow.toLocaleString()} {summary.currency}</td>
-                          <td style={{ fontWeight: 700, color: summary.net >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                            {summary.net >= 0 ? 'Net Inflow' : 'Net Outflow'} {Math.abs(summary.net).toLocaleString()} {summary.currency}
+                          <td style={{ fontWeight: 700, color: 'var(--green)' }}>
+                            {summary.total.toLocaleString()} {summary.currency}
                           </td>
                           <td>{summary.count}</td>
                         </tr>
