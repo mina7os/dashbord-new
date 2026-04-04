@@ -331,13 +331,32 @@ export class WhatsAppManager {
 
   private async cleanChromiumLocks(userId: string) {
     const sessionDir = path.join(process.cwd(), '.wwebjs_auth', `session-user-${userId}`);
-    const locks = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort'];
-    for (const lock of locks) {
+    const lockNames = new Set(['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort', 'LOCK']);
+    if (!fs.existsSync(sessionDir)) return;
+
+    const removeLocks = async (dir: string) => {
+      let entries: fs.Dirent[] = [];
       try {
-        const lockPath = path.join(sessionDir, lock);
-        if (fs.existsSync(lockPath)) await fs.promises.unlink(lockPath);
-      } catch (e) {}
-    }
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        const entryPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await removeLocks(entryPath);
+          continue;
+        }
+
+        if (!lockNames.has(entry.name)) continue;
+        try {
+          await fs.promises.unlink(entryPath);
+        } catch {}
+      }
+    };
+
+    await removeLocks(sessionDir);
   }
 
   private async handleConnectionFailure(userId: string, reason: string) {
