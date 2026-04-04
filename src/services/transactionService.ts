@@ -23,10 +23,15 @@ export async function checkDuplicateTransactionByReference(userId: string, refer
   return !!data;
 }
 
+export interface SavedTransactionResult {
+  recordId: number;
+  idempotencyKey: string;
+}
+
 /**
  * Saves a single transaction to the 'transactions' table and enqueues to 'sheet_sync_queue'.
  */
-export async function saveTransactionToOutputs(tx: ExtractedTransaction, context: PipelineContext): Promise<void> {
+export async function saveTransactionToOutputs(tx: ExtractedTransaction, context: PipelineContext): Promise<SavedTransactionResult> {
   // 1. Generate Idempotency Key (normalized)
   const normalizedRef = (tx.reference_number || tx.transaction_date || 'noref').toLowerCase().trim();
   const idKey = `tx:${context.userId}:${tx.amount}:${normalizedRef}`;
@@ -95,6 +100,11 @@ export async function saveTransactionToOutputs(tx: ExtractedTransaction, context
       // The worker will retry missing syncs later if implemented in bulk sync.
     }
   }
+
+  return {
+    recordId: Number(dbTx.record_id),
+    idempotencyKey: idKey,
+  };
 }
 
 /**

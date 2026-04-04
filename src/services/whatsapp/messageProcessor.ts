@@ -25,7 +25,8 @@ import {
   saveTransactionToOutputs, 
   checkDuplicateTransactionByReference, 
   upsertDailyMetrics,
-  incrementMetric
+  incrementMetric,
+  SavedTransactionResult
 } from '../transactionService.ts';
 import { supabaseAdmin } from '../../lib/supabase-server.ts';
 import { PipelineContext, GoogleTokens } from '../../types/pipeline';
@@ -208,6 +209,7 @@ export class MessageProcessor {
     await incrementMetric(userId, 'financial_candidates');
     const today = new Date().toISOString().split('T')[0];
     let allClean = true;
+    const savedTransactions: Array<{ tx: any; saved: SavedTransactionResult }> = [];
     let reviewRequired = result.confidence < 0.4 || result.review_reason !== undefined;
 
     for (const tx of result.transactions) {
@@ -231,7 +233,8 @@ export class MessageProcessor {
             confidence: tx.confidence || result.confidence, review_status: 'pending'
           }]);
         } else {
-          await saveTransactionToOutputs(tx, context);
+          const saved = await saveTransactionToOutputs(tx, context);
+          savedTransactions.push({ tx, saved });
           await upsertDailyMetrics(userId, today, tx);
         }
       } catch (saveErr) {
@@ -253,8 +256,15 @@ export class MessageProcessor {
         this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
       } else {
         await incrementMetric(userId, 'successful_extractions');
-        const transactionsVisible = await this.waitForTransactionsVisible(userId, row.message_id, result.transactions.length);
+        const transactionsVisible = await this.ensureTransactionsPersisted(userId, row, result, context, savedTransactions);
         if (!transactionsVisible) {
+          const reviewCreated = await this.createReviewFallback(userId, row, result, 'Transaction persistence verification failed');
+          if (reviewCreated) {
+            await incrementMetric(userId, 'pending_review');
+            await markReviewRequired(row.id, 'Transaction saved inconsistently. Sent to manual review.', result.confidence);
+            this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
+            return;
+          }
           await markFailedRetriable(row.id, 'Transaction persistence verification failed', 300000);
           this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
           return;
@@ -290,6 +300,77 @@ export class MessageProcessor {
       await new Promise((resolve) => setTimeout(resolve, this.replyAfterPersistWaitMs));
     }
     return false;
+  }
+
+  private async waitForSavedTransactionVisible(userId: string, saved: SavedTransactionResult, messageId: string) {
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      const { data, error } = await supabaseAdmin
+        .from('transactions')
+        .select('record_id,message_id,idempotency_key')
+        .eq('user_id', userId)
+        .eq('record_id', saved.recordId)
+        .maybeSingle();
+
+      if (!error && data && (data.message_id === messageId || data.idempotency_key === saved.idempotencyKey)) {
+        return true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.replyAfterPersistWaitMs));
+    }
+    return false;
+  }
+
+  private async ensureTransactionsPersisted(
+    userId: string,
+    row: IncomingMessageRow,
+    result: any,
+    context: PipelineContext,
+    savedTransactions: Array<{ tx: any; saved: SavedTransactionResult }>
+  ) {
+    if (savedTransactions.length === 0) return false;
+
+    const initialVisible = await Promise.all(
+      savedTransactions.map(({ saved }) => this.waitForSavedTransactionVisible(userId, saved, row.message_id))
+    );
+    if (initialVisible.every(Boolean)) return true;
+
+    console.warn(`[MessageProcessor | ${userId}] Transaction visibility retry for row=${row.id}`);
+
+    const retriedSaves: Array<{ tx: any; saved: SavedTransactionResult }> = [];
+    for (const entry of savedTransactions) {
+      try {
+        const saved = await saveTransactionToOutputs(entry.tx, context);
+        retriedSaves.push({ tx: entry.tx, saved });
+      } catch (retryErr) {
+        console.error(`[MessageProcessor | ${userId}] Retry save failed row=${row.id}:`, retryErr);
+        return false;
+      }
+    }
+
+    const retriedVisible = await Promise.all(
+      retriedSaves.map(({ saved }) => this.waitForSavedTransactionVisible(userId, saved, row.message_id))
+    );
+    return retriedVisible.every(Boolean);
+  }
+
+  private async createReviewFallback(userId: string, row: IncomingMessageRow, result: any, reason: string) {
+    try {
+      for (const tx of result.transactions) {
+        await supabaseAdmin.from('review_queue').upsert([{
+          user_id: userId,
+          message_id: row.message_id,
+          raw_text: tx.raw_text || row.raw_text || result.ocr_text || null,
+          suggested_data: tx,
+          reason,
+          confidence: tx.confidence || result.confidence,
+          review_status: 'pending',
+        }], { onConflict: 'user_id,message_id' });
+      }
+      return true;
+    } catch (reviewErr) {
+      console.error(`[MessageProcessor | ${userId}] Review fallback failed row=${row.id}:`, reviewErr);
+      return false;
+    }
   }
 
   private async waitForReviewVisible(userId: string, messageId: string) {
