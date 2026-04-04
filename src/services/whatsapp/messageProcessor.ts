@@ -243,13 +243,23 @@ export class MessageProcessor {
     if (allClean) {
       if (result.status === 'LOW_CONFIDENCE' || reviewRequired) {
         await incrementMetric(userId, 'pending_review');
+        const reviewVisible = await this.waitForReviewVisible(userId, row.message_id);
+        if (!reviewVisible) {
+          await markFailedRetriable(row.id, 'Review persistence verification failed', 300000);
+          this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
+          return;
+        }
         await markReviewRequired(row.id, result.review_reason || 'Needs review', result.confidence);
-        await this.waitForReviewVisible(userId, row.message_id);
         this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
       } else {
         await incrementMetric(userId, 'successful_extractions');
+        const transactionsVisible = await this.waitForTransactionsVisible(userId, row.message_id, result.transactions.length);
+        if (!transactionsVisible) {
+          await markFailedRetriable(row.id, 'Transaction persistence verification failed', 300000);
+          this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
+          return;
+        }
         await markCompletedTransaction(row.id, { isFinancial: true, transactionCount: result.transactions.length });
-        await this.waitForTransactionsVisible(userId, row.message_id, result.transactions.length);
         this.sendReplySafe(userId, row.chat_id, this.buildSuccessReply(result.transactions.length));
       }
     } else {
@@ -274,11 +284,12 @@ export class MessageProcessor {
         .eq('message_id', messageId);
 
       if (!error && (data?.length || 0) >= Math.max(1, minimumCount)) {
-        return;
+        return true;
       }
 
       await new Promise((resolve) => setTimeout(resolve, this.replyAfterPersistWaitMs));
     }
+    return false;
   }
 
   private async waitForReviewVisible(userId: string, messageId: string) {
@@ -291,11 +302,12 @@ export class MessageProcessor {
         .eq('review_status', 'pending');
 
       if (!error && (data?.length || 0) > 0) {
-        return;
+        return true;
       }
 
       await new Promise((resolve) => setTimeout(resolve, this.replyAfterPersistWaitMs));
     }
+    return false;
   }
 
   private buildSuccessReply(transactionCount: number) {
