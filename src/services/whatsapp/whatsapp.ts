@@ -232,7 +232,6 @@ export class WhatsAppManager {
   private ignoredOutgoingMessages: Map<string, Set<string>> = new Map();
   private ignoredOutgoingTexts: Map<string, Set<string>> = new Map();
   private activeChatSyncTimers: Map<string, NodeJS.Timeout> = new Map();
-  private syncedMessageIds: Map<string, Map<string, number>> = new Map();
 
   private io: Server;
 
@@ -251,10 +250,7 @@ export class WhatsAppManager {
   }
 
   triggerActiveChatSync(userId: string) {
-    if (this.getStatus(userId).status !== 'ready') return;
-    const client = this.getSyncClient(userId);
-    if (!client) return;
-    void this.syncActiveChats(userId, client);
+    return;
   }
 
   private getReadyClient(userId: string): WhatsAppClient {
@@ -306,7 +302,6 @@ export class WhatsAppManager {
       this.activeChatSyncTimers.delete(userId);
     }
     this.ignoredOutgoingTexts.delete(userId);
-    this.syncedMessageIds.delete(userId);
 
     const current = this.states.get(userId) || { status: 'disconnected' as const };
     if (emit) {
@@ -809,79 +804,10 @@ export class WhatsAppManager {
   }
 
   private startActiveChatSync(userId: string, client: WhatsAppClient) {
-    if (this.getStatus(userId).status !== 'ready') return;
-    const existingTimer = this.activeChatSyncTimers.get(userId);
-    if (existingTimer) clearInterval(existingTimer);
-
-    const timer = setInterval(() => {
-      void this.syncActiveChats(userId);
-    }, WA_ACTIVE_CHAT_SYNC_INTERVAL_MS) as unknown as NodeJS.Timeout;
-
-    this.activeChatSyncTimers.set(userId, timer);
-    void this.syncActiveChats(userId);
+    return;
   }
 
   private async syncActiveChats(userId: string, forcedClient?: WhatsAppClient) {
-    const state = this.getStatus(userId).status;
-    if (state !== 'ready') return;
-    const client = forcedClient || this.getSyncClient(userId);
-    if (!client) return;
-
-    const { data: activeChats, error } = await supabaseAdmin
-      .from('whatsapp_connected_chats')
-      .select('chat_id')
-      .eq('user_id', userId)
-      .eq('is_active', true);
-
-    if (error || !activeChats?.length) return;
-    console.log(`[WhatsApp | ${userId}] Active chat sync scanning ${activeChats.length} configured chat(s) while state=${state}.`);
-
-    const cutoffTs = Math.floor(Date.now() / 1000) - WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS;
-
-    for (const row of activeChats) {
-      try {
-        const chat = await client.getChatById(row.chat_id);
-        const messages = await chat.fetchMessages({ limit: WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT });
-        const sorted = [...messages].sort((a: any, b: any) => Number(a?.timestamp || 0) - Number(b?.timestamp || 0));
-
-        for (const msg of sorted) {
-          if (Number(msg?.timestamp || 0) < cutoffTs) continue;
-          const messageId = getMessageUniqueId(msg);
-          if (!messageId || this.wasRecentlySynced(userId, messageId)) continue;
-          this.rememberSyncedMessage(userId, messageId);
-          await this.handleIncomingMessage(userId, msg, client, 'active_chat_sync');
-        }
-      } catch (err: any) {
-        console.warn(`[WhatsApp | ${userId}] Active chat sync failed for ${row.chat_id}:`, err?.message || err);
-      }
-    }
-  }
-
-  private rememberSyncedMessage(userId: string, messageId: string) {
-    const now = Date.now();
-    const retentionMs = WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS * 1000;
-    const bucket = this.syncedMessageIds.get(userId) || new Map<string, number>();
-    bucket.set(messageId, now);
-
-    for (const [id, seenAt] of bucket.entries()) {
-      if (now - seenAt > retentionMs) {
-        bucket.delete(id);
-      }
-    }
-
-    this.syncedMessageIds.set(userId, bucket);
-  }
-
-  private wasRecentlySynced(userId: string, messageId: string): boolean {
-    const bucket = this.syncedMessageIds.get(userId);
-    const seenAt = bucket?.get(messageId);
-    if (!seenAt) return false;
-
-    if (Date.now() - seenAt > WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS * 1000) {
-      bucket?.delete(messageId);
-      return false;
-    }
-
-    return true;
+    return;
   }
 }
