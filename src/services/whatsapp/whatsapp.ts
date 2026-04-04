@@ -8,6 +8,7 @@ import { insertIncomingMessage, STAGES } from './incomingMessages.ts';
 import { incrementMetric } from '../transactionService.ts';
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
 import { deriveMediaSourceTypeFromMime } from '../../types/media.ts';
 
 const WA_AUTH_TIMEOUT_MS = Number(process.env.WA_AUTH_TIMEOUT_MS || 60000);
@@ -151,6 +152,12 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function execFileAsync(file: string, args: string[]): Promise<void> {
+  return new Promise((resolve) => {
+    execFile(file, args, () => resolve());
+  });
 }
 
 async function getActiveChatConfig(userId: string, chatId: string) {
@@ -359,6 +366,13 @@ export class WhatsAppManager {
     await removeLocks(sessionDir);
   }
 
+  private async killStaleChromiumProcesses(userId: string) {
+    if (process.platform !== 'linux') return;
+    const sessionMarker = `session-user-${userId}`;
+    await execFileAsync('pkill', ['-f', sessionMarker]);
+    await sleep(1000);
+  }
+
   private async handleConnectionFailure(userId: string, reason: string) {
     this.clearStageTimer(userId);
     this.startupLocks.delete(userId); 
@@ -420,6 +434,7 @@ export class WhatsAppManager {
     }
     
     this.startupLocks.set(userId, { startedAt: Date.now() });
+    await this.killStaleChromiumProcesses(userId);
     await this.cleanChromiumLocks(userId);
 
     try {
