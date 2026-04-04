@@ -232,6 +232,7 @@ export class WhatsAppManager {
   private ignoredOutgoingMessages: Map<string, Set<string>> = new Map();
   private ignoredOutgoingTexts: Map<string, Set<string>> = new Map();
   private activeChatSyncTimers: Map<string, NodeJS.Timeout> = new Map();
+  private syncedMessageIds: Map<string, Map<string, number>> = new Map();
 
   private io: Server;
 
@@ -250,6 +251,7 @@ export class WhatsAppManager {
   }
 
   triggerActiveChatSync(userId: string) {
+    if (this.getStatus(userId).status !== 'ready') return;
     const client = this.getSyncClient(userId);
     if (!client) return;
     void this.syncActiveChats(userId, client);
@@ -304,6 +306,7 @@ export class WhatsAppManager {
       this.activeChatSyncTimers.delete(userId);
     }
     this.ignoredOutgoingTexts.delete(userId);
+    this.syncedMessageIds.delete(userId);
 
     const current = this.states.get(userId) || { status: 'disconnected' as const };
     if (emit) {
@@ -470,14 +473,12 @@ export class WhatsAppManager {
       if (this.generations.get(userId) !== currentGen) return;
       this.setStageTimer(userId, 'loading', 120000);
       this.emitState(userId, 'loading', { status: 'loading', percent, message });
-      this.startActiveChatSync(userId, client);
     });
 
     client.on('authenticated', () => {
       if (this.generations.get(userId) !== currentGen) return;
       this.clearStageTimer(userId);
       this.emitState(userId, 'auth', { status: 'authenticated' });
-      this.startActiveChatSync(userId, client);
     });
 
     client.on('auth_failure', (msg: string) => {
@@ -808,6 +809,7 @@ export class WhatsAppManager {
   }
 
   private startActiveChatSync(userId: string, client: WhatsAppClient) {
+    if (this.getStatus(userId).status !== 'ready') return;
     const existingTimer = this.activeChatSyncTimers.get(userId);
     if (existingTimer) clearInterval(existingTimer);
 
@@ -821,7 +823,7 @@ export class WhatsAppManager {
 
   private async syncActiveChats(userId: string, forcedClient?: WhatsAppClient) {
     const state = this.getStatus(userId).status;
-    if (!['ready', 'loading', 'authenticated'].includes(state)) return;
+    if (state !== 'ready') return;
     const client = forcedClient || this.getSyncClient(userId);
     if (!client) return;
 
@@ -844,11 +846,42 @@ export class WhatsAppManager {
 
         for (const msg of sorted) {
           if (Number(msg?.timestamp || 0) < cutoffTs) continue;
+          const messageId = getMessageUniqueId(msg);
+          if (!messageId || this.wasRecentlySynced(userId, messageId)) continue;
+          this.rememberSyncedMessage(userId, messageId);
           await this.handleIncomingMessage(userId, msg, client, 'active_chat_sync');
         }
       } catch (err: any) {
         console.warn(`[WhatsApp | ${userId}] Active chat sync failed for ${row.chat_id}:`, err?.message || err);
       }
     }
+  }
+
+  private rememberSyncedMessage(userId: string, messageId: string) {
+    const now = Date.now();
+    const retentionMs = WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS * 1000;
+    const bucket = this.syncedMessageIds.get(userId) || new Map<string, number>();
+    bucket.set(messageId, now);
+
+    for (const [id, seenAt] of bucket.entries()) {
+      if (now - seenAt > retentionMs) {
+        bucket.delete(id);
+      }
+    }
+
+    this.syncedMessageIds.set(userId, bucket);
+  }
+
+  private wasRecentlySynced(userId: string, messageId: string): boolean {
+    const bucket = this.syncedMessageIds.get(userId);
+    const seenAt = bucket?.get(messageId);
+    if (!seenAt) return false;
+
+    if (Date.now() - seenAt > WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS * 1000) {
+      bucket?.delete(messageId);
+      return false;
+    }
+
+    return true;
   }
 }
