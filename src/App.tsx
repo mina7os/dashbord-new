@@ -157,6 +157,25 @@ function getReceiverIdentity(tx: Transaction) {
   return { label: primary, aliases, key };
 }
 
+function normalizeReceiverGroupKey(value?: string | null) {
+  const normalized = normalizeEntityName(value);
+  if (!normalized) return 'unknown-receiver';
+
+  if (
+    normalized.includes('العربية الخليجية') &&
+    (
+      normalized.includes('الزيوت النباتية') ||
+      normalized.includes('تعبئة') ||
+      normalized.includes('تكرير') ||
+      normalized.includes('لعصر')
+    )
+  ) {
+    return 'receiver:arabia-gulf-oils';
+  }
+
+  return normalized;
+}
+
 function buildReceiverSummaries(transactions: Transaction[]) {
   const groups = new Map<string, {
     key: string;
@@ -169,7 +188,7 @@ function buildReceiverSummaries(transactions: Transaction[]) {
 
   for (const tx of transactions) {
     const receiver = getReceiverIdentity(tx);
-    const key = normalizeEntityName(receiver.label) || receiver.key || 'unknown-receiver';
+    const key = normalizeReceiverGroupKey(receiver.label) || receiver.key || 'unknown-receiver';
     const amount = Math.abs(Number(tx.amount) || 0);
     const currency = tx.currency || 'EGP';
     const current = groups.get(key) || {
@@ -192,6 +211,13 @@ function buildReceiverSummaries(transactions: Transaction[]) {
       if (alias && alias !== current.label) {
         current.aliases.add(alias);
       }
+    }
+
+    if (tx.client_name && normalizeReceiverGroupKey(tx.client_name) === key && tx.client_name !== current.label) {
+      current.aliases.add(tx.client_name);
+    }
+    if (tx.beneficiary_name && normalizeReceiverGroupKey(tx.beneficiary_name) === key && tx.beneficiary_name !== current.label) {
+      current.aliases.add(tx.beneficiary_name);
     }
 
     current.total += amount;
