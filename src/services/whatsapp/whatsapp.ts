@@ -718,15 +718,24 @@ export class WhatsAppManager {
     if (cached && cached.length > 0) return cached;
 
     const client = this.getReadyClient(userId);
+    const state = this.getStatus(userId);
     let lastMapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
+
+    if (state.status === 'ready' && state.lastUpdatedAt) {
+      const readyForMs = Date.now() - new Date(state.lastUpdatedAt).getTime();
+      if (readyForMs < 15000) {
+        await sleep(12000 - Math.max(0, readyForMs - 3000));
+      }
+    }
 
     for (let attempt = 1; attempt <= WA_DISCOVERY_MAX_ATTEMPTS; attempt++) {
       let mapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
+      const attemptTimeoutMs = WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 10000);
 
       try {
         mapped = await withTimeout(
           getLightweightChats(client),
-          8000,
+          attemptTimeoutMs,
           'Lightweight chat discovery timed out.'
         );
         console.log(`[WhatsApp | ${userId}] Lightweight chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
@@ -738,12 +747,33 @@ export class WhatsAppManager {
         try {
           mapped = await withTimeout(
             getLightweightContacts(client),
-            8000,
+            attemptTimeoutMs,
             'Contact discovery fallback timed out. Please try again in a few seconds.'
           );
           console.log(`[WhatsApp | ${userId}] Contact fallback returned ${mapped.length} contacts on attempt ${attempt}.`);
         } catch (contactError: any) {
           console.warn(`[WhatsApp | ${userId}] Contact fallback failed on attempt ${attempt}:`, contactError?.message || contactError);
+        }
+      }
+
+      if (mapped.length === 0) {
+        try {
+          const hydratedChats = await withTimeout(
+            client.getChats(),
+            attemptTimeoutMs,
+            'Hydrated WhatsApp chat discovery timed out.'
+          );
+          mapped = (hydratedChats || [])
+            .map((chat: any) => ({
+              id: chat?.id?._serialized || '',
+              name: chat?.name || chat?.formattedTitle || chat?.id?._serialized || 'Unknown Chat',
+              isGroup: Boolean(chat?.isGroup),
+              unreadCount: Number(chat?.unreadCount || 0),
+            }))
+            .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
+          console.log(`[WhatsApp | ${userId}] Hydrated chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
+        } catch (hydratedError: any) {
+          console.warn(`[WhatsApp | ${userId}] Hydrated chat discovery failed on attempt ${attempt}:`, hydratedError?.message || hydratedError);
         }
       }
 
