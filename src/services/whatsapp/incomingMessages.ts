@@ -169,6 +169,16 @@ export async function markCompletedTransaction(incomingId: string, metrics: { is
   await advanceStage(incomingId, 'completed_via_pipeline', 'completed_transaction', metrics);
 }
 
+export async function markCompletedDuplicate(incomingId: string, reason: string, duplicateReference?: string | null) {
+  await advanceStage(incomingId, 'duplicate_reference', 'completed_duplicate', {
+    reviewReason: reason,
+    metadata: {
+      duplicate_reference: duplicateReference || null,
+      duplicate_confirmed: false,
+    },
+  });
+}
+
 export async function markReviewRequired(incomingId: string, reason: string, confidence: number) {
   await advanceStage(incomingId, STAGES.REVIEW, 'review_required', { reviewReason: reason, extractionConfidence: confidence });
 }

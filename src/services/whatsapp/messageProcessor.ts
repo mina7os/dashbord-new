@@ -13,6 +13,7 @@ import {
   markClaimed,
   markExtracting,
   markCompletedTransaction,
+  markCompletedDuplicate,
   markReviewRequired,
   markFailedRetriable,
   markFailedPermanent,
@@ -220,7 +221,11 @@ export class MessageProcessor {
 
       if (tx.reference_number && await checkDuplicateTransactionByReference(userId, tx.reference_number)) {
         await incrementMetric(userId, 'duplicates');
-        await advanceStage(row.id, 'duplicate_reference', 'completed_duplicate');
+        await markCompletedDuplicate(
+          row.id,
+          `Duplicate reference detected: ${tx.reference_number}`,
+          tx.reference_number
+        );
         this.sendReplySafe(userId, row.chat_id, this.buildDuplicateReply(tx));
         return; 
       }

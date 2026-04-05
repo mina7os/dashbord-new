@@ -707,6 +707,51 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
     }
   });
 
+  api.patch('/pipeline/incoming/:id/confirm-duplicate', async (req: any, res) => {
+    try {
+      if (!req.access.canReview && !req.access.canReadAllData) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+
+      const { data: incoming, error: incomingError } = await supabaseAdmin
+        .from('incoming_messages')
+        .select('id,user_id,processing_status,metadata,review_reason')
+        .eq('id', req.params.id)
+        .maybeSingle();
+
+      if (incomingError) throw incomingError;
+      if (!incoming) return res.status(404).json({ error: 'Incoming message not found.' });
+      if (!req.access.canReadAllData && incoming.user_id !== req.access.userId) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+      if (!String(incoming.processing_status || '').includes('duplicate')) {
+        return res.status(400).json({ error: 'This item is not marked as duplicate.' });
+      }
+
+      const metadata = {
+        ...(incoming.metadata || {}),
+        duplicate_confirmed: true,
+        duplicate_confirmed_at: new Date().toISOString(),
+        duplicate_confirmed_by: req.user.id,
+      };
+
+      const { error: updateError } = await supabaseAdmin
+        .from('incoming_messages')
+        .update({
+          metadata,
+          review_reason: incoming.review_reason || 'Duplicate confirmed by manager.',
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', incoming.id);
+
+      if (updateError) throw updateError;
+
+      res.json({ status: 'confirmed_duplicate', id: incoming.id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to confirm duplicate.' });
+    }
+  });
+
   api.post('/ingest', async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);

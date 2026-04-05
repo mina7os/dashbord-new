@@ -138,7 +138,9 @@ interface QueueItem {
   processing_stage: string;
   attempt_count: number;
   last_error?: string;
+  review_reason?: string;
   received_at: string;
+  metadata?: any;
 }
 
 function getTransactionRowKey(tx: Transaction) {
@@ -1222,7 +1224,7 @@ export default function App() {
     [incomingQueue]
   );
   const duplicateIncomingItems = useMemo(
-    () => incomingQueue.filter(item => item.processing_status.includes('duplicate')),
+    () => incomingQueue.filter(item => item.processing_status.includes('duplicate') && !item.metadata?.duplicate_confirmed),
     [incomingQueue]
   );
   const actionablePendingCount = reviewQueue.length + pendingIncomingItems.length;
@@ -1295,6 +1297,26 @@ export default function App() {
       addToast('Duplicate message moved to review for manual correction.', 'success');
       setQueueFilter('all');
       setTab('review');
+      void loadData(false);
+    } catch (err: any) {
+      addToast(`Failed: ${err.message}`, 'error');
+    }
+  }, [session, addToast, loadData]);
+
+  const handleConfirmDuplicate = useCallback(async (incomingId: string) => {
+    if (!session) return;
+    try {
+      const res = await fetch(`/api/pipeline/incoming/${incomingId}/confirm-duplicate`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to confirm duplicate');
+
+      addToast('Duplicate confirmed.', 'success');
       void loadData(false);
     } catch (err: any) {
       addToast(`Failed: ${err.message}`, 'error');
@@ -1800,12 +1822,22 @@ export default function App() {
                         <span className={`badge-pill ${item.processing_status.includes('failed') ? 'badge-duplicate' : (item.processing_status === 'pending' ? 'badge-pending' : 'badge-completed')}`}>
                           {item.processing_status}
                         </span>
+                        {(item.review_reason || item.metadata?.duplicate_reference) && (
+                          <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--muted)', maxWidth: '260px', lineHeight: 1.4 }}>
+                            {item.review_reason || `Duplicate reference: ${item.metadata?.duplicate_reference}`}
+                          </div>
+                        )}
                       </td>
                       <td>{item.attempt_count}</td>
                       <td style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                         <button onClick={() => setSelectedInspectId(item.id)} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 8px', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.75rem' }}>
                           Inspect
                         </button>
+                        {item.processing_status.includes('duplicate') && (
+                          <button onClick={() => handleConfirmDuplicate(item.id)} style={{ background: 'rgba(34,197,94,0.12)', border: '1px solid rgba(34,197,94,0.3)', borderRadius: '6px', padding: '4px 8px', color: '#22c55e', cursor: 'pointer', fontSize: '0.75rem' }}>
+                            Confirm Duplicate
+                          </button>
+                        )}
                         {item.processing_status.includes('duplicate') && (
                           <button onClick={() => handleSendDuplicateToReview(item.id)} style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '6px', padding: '4px 8px', color: 'var(--yellow)', cursor: 'pointer', fontSize: '0.75rem' }}>
                             Send to Review
