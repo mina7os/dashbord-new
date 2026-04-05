@@ -1060,14 +1060,14 @@ export default function App() {
     };
   }, [session, access?.canUseIntegrations]);
 
-  const handleConnectWhatsApp = async () => {
+  const handleConnectWhatsApp = async (forceFresh = false) => {
     if (!session) return;
     setWhatsappStatus('connecting');
     try {
       const res = await fetch('/api/whatsapp/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ userId: session.user.id }),
+        body: JSON.stringify({ userId: session.user.id, forceFresh }),
       });
       if (!res.ok) {
         const data = await res.json();

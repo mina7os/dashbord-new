@@ -544,7 +544,11 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
       return res.status(403).json({ error: err.message });
     }
     try {
-      await deps.whatsapp.startInstance(req.user.id);
+      const forceFresh = !!req.body?.forceFresh;
+      if (forceFresh) {
+        await deps.whatsapp.stopInstance(req.user.id, true);
+      }
+      await deps.whatsapp.startInstance(req.user.id, forceFresh ? { freshSession: true } : undefined);
       res.json(deps.whatsapp.getStatus(req.user.id));
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to start WhatsApp" });

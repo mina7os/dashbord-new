@@ -16,7 +16,7 @@ interface Props {
   whatsappStatus: 'disconnected' | 'connecting' | 'qr' | 'loading' | 'authenticated' | 'ready' | 'initializing' | 'cleaning';
   whatsappStatusPayload: any;
   qrCode: string | null;
-  onConnectWhatsApp: () => void;
+  onConnectWhatsApp: (forceFresh?: boolean) => void;
   onDisconnectWhatsApp: () => void;
 }
 
@@ -451,13 +451,15 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {canManageIntegrations && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning') && (
+        {canManageIntegrations && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning' || whatsappStatus === 'reconnecting' || whatsappStatus === 'failed') && (
           <div style={{ textAlign: 'center', padding: '2rem', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', border: '1px solid var(--border)' }}>
             <RefreshCw size={32} className="spinner" color="var(--primary)" />
             <p style={{ marginTop: '1.25rem', fontWeight: 500, color: 'white' }}>
               {whatsappStatus === 'initializing' ? 'Initializing Core Engine...' : 
                whatsappStatus === 'authenticated' ? 'Authentication Accepted' :
                whatsappStatus === 'cleaning' ? 'Cleaning up stale process...' :
+               whatsappStatus === 'reconnecting' ? 'Recovering WhatsApp Session...' :
+               whatsappStatus === 'failed' ? 'WhatsApp Session Failed to Start' :
                whatsappStatus === 'loading' ? (whatsappStatusPayload?.message || 'Loading WhatsApp Data...') : 
                'Connecting to WhatsApp...'}
             </p>
@@ -469,6 +471,16 @@ export default function Integrations(props: Props) {
             <p style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
               {whatsappStatusPayload?.reason || 'This can take up to 60 seconds.'}
             </p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem', marginTop: '1rem', flexWrap: 'wrap' }}>
+              <button
+                className="primary-button"
+                onClick={() => onConnectWhatsApp(true)}
+                style={{ background: 'linear-gradient(135deg, #f59e0b, #d97706)' }}
+              >
+                <RefreshCw size={16} />
+                Reset Session & Show QR
+              </button>
+            </div>
           </div>
         )}
 
