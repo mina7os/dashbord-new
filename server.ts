@@ -122,7 +122,23 @@ function rateLimit(maxRequests: number, windowMs: number, scope = 'global') {
 async function fetchScopedUserIds(access: any): Promise<string[]> {
   if (access.canReadAllData) {
     const { data, error } = await supabaseAdmin.from('user_roles').select('user_id').eq('is_active', true);
-    if (error || !data?.length) return [access.userId];
+    if (error || !data?.length) {
+      const fallbackQueries = await Promise.all([
+        supabaseAdmin.from('transactions').select('user_id'),
+        supabaseAdmin.from('review_queue').select('user_id'),
+        supabaseAdmin.from('incoming_messages').select('user_id'),
+        supabaseAdmin.from('user_integrations').select('user_id'),
+      ]);
+
+      const fallbackIds = new Set<string>([access.userId]);
+      for (const result of fallbackQueries) {
+        for (const row of result.data || []) {
+          if (row?.user_id) fallbackIds.add(String(row.user_id));
+        }
+      }
+
+      return Array.from(fallbackIds);
+    }
     return data.map((row: any) => row.user_id);
   }
   return [access.userId];
