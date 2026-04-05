@@ -115,10 +115,16 @@ function normalizeBankName(value?: string | null) {
   const normalized = normalizeEntityName(value);
   if (!normalized) return 'unknown bank';
 
+  const bankTokens = normalized
+    .split(' ')
+    .map((token) => token.replace(/^ال/u, ''))
+    .filter(Boolean);
+  const hasToken = (fragment: string) => bankTokens.some((token) => token.includes(fragment));
+
   const aliases: Array<[RegExp, string]> = [
     [/\bbanque\s+misr\b|\bbank\s+misr\b|\bmisr\b/, 'Banque Misr'],
     [/\bnational\s+bank\s+of\s+egypt\b|\bnbe\b/, 'National Bank of Egypt'],
-    [/\bcib\b|\bcommercial\s+international\s+bank\b/, 'Commercial International Bank'],
+    [/\bcib\b|\bcommercial\s+international\s+bank\b/, 'CIB'],
     [/\bqnb\b|\bqnb\s+alahli\b|\bqnb\s+alahli\b/, 'QNB Alahli'],
     [/\bhsbc\b/, 'HSBC'],
     [/\bsaib\b/, 'SAIB'],
@@ -131,6 +137,19 @@ function normalizeBankName(value?: string | null) {
 
   for (const [pattern, label] of aliases) {
     if (pattern.test(normalized)) return label;
+  }
+
+  if (hasToken('cib') || (hasToken('commercial') && hasToken('international'))) {
+    return 'CIB';
+  }
+  if (hasToken('misr')) {
+    return 'Banque Misr';
+  }
+  if (hasToken('nbe') || (hasToken('national') && hasToken('egypt'))) {
+    return 'National Bank of Egypt';
+  }
+  if (hasToken('qnb')) {
+    return 'QNB Alahli';
   }
 
   return String(value || 'Unknown Bank').trim() || 'Unknown Bank';
