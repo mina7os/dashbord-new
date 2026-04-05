@@ -19,6 +19,23 @@ function normalizeReferenceNumber(reference?: string | null): string {
     .trim();
 }
 
+function referencesLookEquivalent(left?: string | null, right?: string | null): boolean {
+  const a = normalizeReferenceNumber(left);
+  const b = normalizeReferenceNumber(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  const suffix = longer.slice(shorter.length);
+
+  return (
+    longer.startsWith(shorter) &&
+    suffix.length > 0 &&
+    suffix.length <= 3 &&
+    /^[A-Z]+$/.test(suffix)
+  );
+}
+
 /**
  * Checks if a transaction with the same reference number already exists for this user.
  */
@@ -45,7 +62,10 @@ export async function checkDuplicateTransactionByReference(userId: string, refer
   if (candidateError) return false;
 
   return Boolean(
-    candidates?.some((row: any) => normalizeReferenceNumber(row.reference_number) === normalizedReference)
+    candidates?.some((row: any) =>
+      normalizeReferenceNumber(row.reference_number) === normalizedReference ||
+      referencesLookEquivalent(row.reference_number, normalizedReference)
+    )
   );
 }
 

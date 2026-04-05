@@ -943,6 +943,59 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
     }
   });
 
+  api.delete('/transactions/:recordId', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager', 'cfo']);
+
+      const recordId = Number(req.params.recordId);
+      if (!Number.isFinite(recordId)) {
+        return res.status(400).json({ error: 'Invalid transaction record id.' });
+      }
+
+      const { data: existing, error: existingError } = await supabaseAdmin
+        .from('transactions')
+        .select('*')
+        .eq('record_id', recordId)
+        .single();
+
+      if (existingError || !existing) {
+        return res.status(404).json({ error: 'Transaction not found.' });
+      }
+
+      const { error } = await supabaseAdmin
+        .from('transactions')
+        .delete()
+        .eq('record_id', recordId);
+
+      if (error) throw error;
+
+      await logChangeAudit({
+        actor: req.access,
+        action: 'transaction.delete',
+        entityType: 'transactions',
+        entityId: String(recordId),
+        targetUserId: existing.user_id,
+        reason: String(req.body?.comment || '').trim() || undefined,
+        metadata: {
+          deleted: {
+            record_id: existing.record_id,
+            transaction_date: existing.transaction_date,
+            amount: existing.amount,
+            currency: existing.currency,
+            sender_name: existing.sender_name,
+            beneficiary_name: existing.beneficiary_name,
+            reference_number: existing.reference_number,
+            bank_name: existing.bank_name,
+          },
+        },
+      });
+
+      return res.json({ deleted: true, recordId });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to delete transaction' });
+    }
+  });
+
   api.get('/review-queue', rateLimit(120, 60000, 'dashboard.review-queue') as any, async (req: any, res) => {
     try {
       if (!req.access.canReview && !req.access.canReadAllData) {

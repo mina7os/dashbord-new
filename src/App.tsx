@@ -1161,6 +1161,29 @@ export default function App() {
     }
   }, [session, addToast, loadData]);
 
+  const handleTransactionDelete = useCallback(async (recordId: string | number) => {
+    if (!session) return;
+    if (!window.confirm('Delete this transaction? This action cannot be undone.')) return;
+
+    try {
+      const res = await fetch(`/api/transactions/${recordId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ comment: 'Deleted manually from dashboard.' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Transaction delete failed');
+
+      addToast('Transaction deleted successfully.', 'success');
+      void loadData(false);
+    } catch (err: any) {
+      addToast(`Failed: ${err.message}`, 'error');
+    }
+  }, [session, addToast, loadData]);
+
   // â”€â”€â”€ Derived State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const updateTransactionFilter = useCallback((key: keyof TransactionFilters, value: string) => {
     setTransactionFilters(prev => ({ ...prev, [key]: value }));
@@ -1652,12 +1675,20 @@ export default function App() {
                         <td>{statusBadge(tx.processing_status)}</td>
                         {canEditTransactions && (
                           <td>
-                            <button
-                              onClick={() => setSelectedTransactionEdit(tx)}
-                              style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 8px', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.75rem' }}
-                            >
-                              Edit
-                            </button>
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <button
+                                onClick={() => setSelectedTransactionEdit(tx)}
+                                style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 8px', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.75rem' }}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                onClick={() => handleTransactionDelete(tx.record_id || tx.id || '')}
+                                style={{ background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '6px', padding: '4px 8px', color: '#ef4444', cursor: 'pointer', fontSize: '0.75rem' }}
+                              >
+                                Delete
+                              </button>
+                            </div>
                           </td>
                         )}
                       </tr>
