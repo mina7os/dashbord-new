@@ -19,6 +19,7 @@ interface Transaction {
   sender_name: string;
   beneficiary_name: string;
   client_name?: string;
+  beneficiary_account?: string;
   transaction_type: string;
   channel: string;
   processing_status: string;
@@ -142,6 +143,10 @@ function getReceiverIdentity(tx: Transaction) {
 
   const unique = Array.from(new Set(candidates));
   if (unique.length === 0) {
+    const fallbackAccount = String(tx.beneficiary_account || '').trim();
+    if (fallbackAccount) {
+      return { label: `Account ${fallbackAccount}`, aliases: [] as string[], key: `receiver-account-${fallbackAccount}` };
+    }
     return { label: 'Unknown Receiver', aliases: [] as string[], key: 'unknown-receiver' };
   }
 
@@ -654,6 +659,7 @@ export default function App() {
       setAccessibleSheets(ctxRes.accessibleSheets || []);
       setTransactions((txRes.transactions || []).map((tx: any) => ({
         ...tx,
+        beneficiary_account: tx.beneficiary_account,
         id: tx.id ?? (tx.record_id != null ? String(tx.record_id) : undefined),
       })));
       setReviewQueue(rqRes.reviewQueue || []);
@@ -1278,13 +1284,13 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Date</th><th>Type</th><th>Sender</th><th>Receivers</th><th>Bank / Channel</th><th>Reference</th><th>Amount</th><th>Status</th>
+                      <th style={{ width: '130px', whiteSpace: 'nowrap' }}>Date</th><th>Type</th><th>Sender</th><th>Receivers</th><th>Bank / Channel</th><th>Reference</th><th>Amount</th><th>Status</th>
                     </tr>
                   </thead>
                   <tbody>
                     {paginatedTransactions.map(tx => (
                       <tr key={getTransactionRowKey(tx)}>
-                        <td style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{tx.transaction_date || tx.created_at.split('T')[0]}</td>
+                        <td style={{ color: 'var(--muted)', fontSize: '0.75rem', whiteSpace: 'nowrap', minWidth: '130px' }}>{tx.transaction_date || tx.created_at.split('T')[0]}</td>
                         <td>{typeBadge(tx.transaction_type)}</td>
                         <td>
                           <div style={{ fontWeight: 600 }}>{tx.sender_name || 'Unknown'}</div>
