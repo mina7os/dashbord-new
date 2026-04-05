@@ -9,7 +9,11 @@ import { ExtractedTransaction } from './extraction.ts';
 import { PipelineContext } from '../types/pipeline';
 
 function normalizeReferenceNumber(reference?: string | null): string {
-  return String(reference || '')
+  const digitsNormalized = String(reference || '')
+    .replace(/[٠-٩]/g, (char) => String(char.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (char) => String(char.charCodeAt(0) - 0x06F0));
+
+  return digitsNormalized
     .toUpperCase()
     .replace(/[^A-Z0-9]/g, '')
     .trim();

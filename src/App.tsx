@@ -134,6 +134,7 @@ interface QueueItem {
   id: string;
   message_id: string;
   chat_id: string;
+  raw_text?: string;
   processing_status: string;
   processing_stage: string;
   attempt_count: number;
@@ -1825,6 +1826,11 @@ export default function App() {
                         {(item.review_reason || item.metadata?.duplicate_reference) && (
                           <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--muted)', maxWidth: '260px', lineHeight: 1.4 }}>
                             {item.review_reason || `Duplicate reference: ${item.metadata?.duplicate_reference}`}
+                          </div>
+                        )}
+                        {item.raw_text && (
+                          <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--muted)', maxWidth: '260px', lineHeight: 1.4, whiteSpace: 'pre-wrap' }}>
+                            {String(item.raw_text).slice(0, 140)}
                           </div>
                         )}
                       </td>
