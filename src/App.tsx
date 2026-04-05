@@ -1132,6 +1132,7 @@ export default function App() {
     () => incomingQueue.filter(item => item.processing_status === 'pending'),
     [incomingQueue]
   );
+  const actionablePendingCount = reviewQueue.length + pendingIncomingItems.length;
 
   const paginatedTransactions = useMemo(() =>
     filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
@@ -1358,8 +1359,8 @@ export default function App() {
                 onClick={openPendingItems}
                 style={{ cursor: (reviewQueue.length > 0 || pendingIncomingItems.length > 0) ? 'pointer' : 'default' }}
               >
-                <div className="label">Pending Review</div>
-                <div className="value" style={{ color: 'var(--yellow)' }}>{stats?.pending_review ?? 0}</div>
+                <div className="label">Pending Actions</div>
+                <div className="value" style={{ color: 'var(--yellow)' }}>{actionablePendingCount}</div>
                 <div className="sub">
                   {reviewQueue.length > 0
                     ? 'Click to open review items.'
