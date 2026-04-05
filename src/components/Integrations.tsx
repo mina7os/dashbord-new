@@ -372,7 +372,7 @@ export default function Integrations(props: Props) {
             <p style={{ color: 'var(--text)', marginBottom: '1.5rem', opacity: 0.8 }}>
               Authorize our system to ingest data from your WhatsApp chats.
             </p>
-            <button className="primary-button" onClick={onConnectWhatsApp}>
+            <button className="primary-button" onClick={() => onConnectWhatsApp()}>
               <Smartphone size={20} />
               Connect your WhatsApp
             </button>
