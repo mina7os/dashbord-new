@@ -75,11 +75,8 @@ function normalizeText(value: string): string {
 }
 
 const AUTOMATED_REPLY_PREFIXES = [
-  'received. the transaction was processed successfully.',
-  'received. transactions were processed successfully.',
-  'received. this transaction was already recorded',
-  'received. the transaction needs manual review',
-  'received, but processing could not be completed automatically.',
+  'received.',
+  'received, but',
 ];
 
 function getMessageTimestampISO(msg: any): string | null {
@@ -91,7 +88,18 @@ function getMessageTimestampISO(msg: any): string | null {
 function isKnownAutomatedReplyText(text: string): boolean {
   const normalized = normalizeText(text);
   if (!normalized) return false;
-  return AUTOMATED_REPLY_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+  if (!AUTOMATED_REPLY_PREFIXES.some((prefix) => normalized.startsWith(prefix))) {
+    return false;
+  }
+
+  return (
+    normalized.includes('processed successfully') ||
+    normalized.includes('already recorded') ||
+    normalized.includes('needs manual review') ||
+    normalized.includes('could not be completed automatically') ||
+    normalized.includes('was reviewed and rejected') ||
+    normalized.includes('was approved and processed successfully')
+  );
 }
 
 async function resolveSenderDisplayName(msg: any, client: WhatsAppClient): Promise<string> {
