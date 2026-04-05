@@ -392,24 +392,30 @@ export class WhatsAppManager {
 
     const failures = (this.failureCounts.get(userId) || 0) + 1;
     this.failureCounts.set(userId, failures);
+    const shouldHardResetSession =
+      reason.includes("Stuck in 'loading'") ||
+      reason.includes('Protocol error (Runtime.callFunctionOn): Target closed');
 
     if (reason.includes('Auth Failure')) {
       await this.executeHardWipe(userId);
       this.failureCounts.delete(userId);
       this.clearRuntimeState(userId, `Authentication failed. Please re-link your device.`);
     } else if (failures <= 2) {
+      if (shouldHardResetSession) {
+        await this.executeHardWipe(userId);
+      }
       await this.cleanChromiumLocks(userId);
       this.clearRuntimeState(userId, `Recovering connection: ${reason}. Retrying...`);
-      this.scheduleReconnect(userId);
+      this.scheduleReconnect(userId, shouldHardResetSession);
     } else {
       this.emitState(userId, 'failed', { status: 'failed', reason: `Failed to connect after ${failures} tries.` });
       this.clearRuntimeState(userId, `Failed to connect after ${failures} tries. Please manually reconnect.`, false);
     }
   }
 
-  private scheduleReconnect(userId: string) {
+  private scheduleReconnect(userId: string, freshSession: boolean = false) {
     this.emitState(userId, 'reconnecting', { status: 'reconnecting' });
-    setTimeout(() => this.startInstance(userId), 3000);
+    setTimeout(() => this.startInstance(userId, freshSession ? { freshSession: true } : undefined), 3000);
   }
 
   async restoreExistingSessions(): Promise<void> {
