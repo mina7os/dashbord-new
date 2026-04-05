@@ -206,6 +206,64 @@ function normalizeEntityName(value?: string | null) {
     .trim();
 }
 
+function normalizeArabicCompanyName(value?: string | null) {
+  return String(value || '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .replace(/ى/g, 'ي')
+    .replace(/ئ/g, 'ي')
+    .replace(/ؤ/g, 'و')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function includesAny(value: string, fragments: string[]) {
+  return fragments.some((fragment) => value.includes(fragment));
+}
+
+function canonicalizeReceiverName(value?: string | null) {
+  const normalized = normalizeEntityName(value);
+  if (!normalized) return 'unknown-receiver';
+
+  const arabicNormalized = normalizeArabicCompanyName(value);
+
+  const isGulfArabianOilsEnglish =
+    includesAny(normalized, ['gulf arabian', 'arabian gulf', 'alarabya elkhalygya', 'alarabya elkhalygia', 'alarabia elkhalygya', 'alarabia elkhalygia']) &&
+    includesAny(normalized, ['oil', 'oils', 'edible oils', 'refining', 'refinin']);
+
+  const isGulfArabianOilsArabic =
+    includesAny(arabicNormalized, ['العربيه الخليجيه', 'العربية الخليجية', 'عربيه خليجيه']) &&
+    includesAny(arabicNormalized, ['زيوت', 'نباتيه', 'تكرير', 'تعبئه', 'عصر']);
+
+  if (isGulfArabianOilsEnglish || isGulfArabianOilsArabic) {
+    return 'receiver:gulf-arabian-edible-oils';
+  }
+
+  const isFabrikTextileEnglish =
+    includesAny(normalized, ['fabrik textile', 'fabric textile', 'textile']) &&
+    includesAny(normalized, ['printing', 'hygienic', 'health products']);
+
+  const isFabrikTextileArabic =
+    includesAny(arabicNormalized, ['فابريك تكستايل']) &&
+    includesAny(arabicNormalized, ['طباعه', 'منتجات صحيه', 'صحيه']);
+
+  if (isFabrikTextileEnglish || isFabrikTextileArabic) {
+    return 'receiver:fabrik-textile-health-products';
+  }
+
+  const stopWords = new Set([
+    'company', 'co', 'group', 'for', 'of', 'and', 'the', 'llc', 'ltd',
+    'شركة', 'شركه', 'ذ', 'م',
+  ]);
+
+  const tokens = normalized
+    .split(' ')
+    .filter((token) => token.length > 1 && !stopWords.has(token));
+
+  return Array.from(new Set(tokens)).sort().join(' ') || normalized;
+}
+
 function normalizeBankName(value?: string | null) {
   const normalized = normalizeEntityName(value);
   if (!normalized) return 'unknown bank';
@@ -272,7 +330,7 @@ function getReceiverIdentity(tx: Transaction) {
     return normalizedAlias && normalizedAlias !== normalizedPrimary && !normalizedPrimary.includes(normalizedAlias);
   });
 
-  const key = [primary, ...aliases].map(normalizeEntityName).join('|');
+  const key = canonicalizeReceiverName(primary);
   return { label: primary, aliases, key };
 }
 
@@ -319,7 +377,7 @@ function buildReceiverSummaries(transactions: Transaction[]) {
 
   for (const tx of transactions) {
     const receiver = getReceiverIdentity(tx);
-    const key = normalizeReceiverGroupKey(receiver.label) || receiver.key || 'unknown-receiver';
+    const key = receiver.key || normalizeReceiverGroupKey(receiver.label) || 'unknown-receiver';
     const amount = Math.abs(Number(tx.amount) || 0);
     const currency = tx.currency || 'EGP';
     const current = groups.get(key) || {
@@ -344,10 +402,10 @@ function buildReceiverSummaries(transactions: Transaction[]) {
       }
     }
 
-    if (tx.client_name && normalizeReceiverGroupKey(tx.client_name) === key && tx.client_name !== current.label) {
+    if (tx.client_name && canonicalizeReceiverName(tx.client_name) === key && tx.client_name !== current.label) {
       current.aliases.add(tx.client_name);
     }
-    if (tx.beneficiary_name && normalizeReceiverGroupKey(tx.beneficiary_name) === key && tx.beneficiary_name !== current.label) {
+    if (tx.beneficiary_name && canonicalizeReceiverName(tx.beneficiary_name) === key && tx.beneficiary_name !== current.label) {
       current.aliases.add(tx.beneficiary_name);
     }
 
