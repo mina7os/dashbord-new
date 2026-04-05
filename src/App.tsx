@@ -1128,6 +1128,10 @@ export default function App() {
   }, [filteredTransactions]);
 
   const receiverSummaries = useMemo(() => buildReceiverSummaries(filteredTransactions), [filteredTransactions]);
+  const pendingIncomingItems = useMemo(
+    () => incomingQueue.filter(item => item.processing_status === 'pending'),
+    [incomingQueue]
+  );
 
   const paginatedTransactions = useMemo(() =>
     filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
@@ -1138,6 +1142,20 @@ export default function App() {
   const canSeeQueue = !!access?.canReview;
   const canSeeIntegrations = access?.role === 'manager';
   const canEditTransactions = !!access?.canEditAllData;
+
+  const openPendingItems = useCallback(() => {
+    if (reviewQueue.length > 0 && canSeeReview) {
+      setTab('review');
+      return;
+    }
+
+    if (pendingIncomingItems.length > 0 && canSeeQueue) {
+      setTab('queue');
+      return;
+    }
+
+    addToast('No pending items are available right now.', 'info');
+  }, [reviewQueue.length, canSeeReview, pendingIncomingItems.length, canSeeQueue, addToast]);
 
   useEffect(() => {
     if (page > 0 && totalPages > 0 && page >= totalPages) {
@@ -1335,9 +1353,20 @@ export default function App() {
                     : '-'}
                 </div>
               </div>
-              <div className="stat-card glass">
+              <div
+                className="stat-card glass"
+                onClick={openPendingItems}
+                style={{ cursor: (reviewQueue.length > 0 || pendingIncomingItems.length > 0) ? 'pointer' : 'default' }}
+              >
                 <div className="label">Pending Review</div>
                 <div className="value" style={{ color: 'var(--yellow)' }}>{stats?.pending_review ?? 0}</div>
+                <div className="sub">
+                  {reviewQueue.length > 0
+                    ? 'Click to open review items.'
+                    : pendingIncomingItems.length > 0
+                      ? 'Click to inspect pending queue items.'
+                      : 'No pending actions right now.'}
+                </div>
               </div>
               <div className="stat-card glass">
                 <div className="label">Duplicates</div>
@@ -1583,6 +1612,13 @@ export default function App() {
         {/* Queue Tab */}
         {tab === 'queue' && (
           <div className="table-wrap">
+            {pendingIncomingItems.length > 0 && (
+              <div style={{ padding: '0.9rem 1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', fontSize: '0.85rem' }}>
+                {pendingIncomingItems.length} pending message{pendingIncomingItems.length === 1 ? '' : 's'} in processing.
+                Use <strong style={{ color: 'var(--text)' }}>Inspect</strong> to see the message details.
+                If a message needs your action, it will move to the <strong style={{ color: 'var(--text)' }}>Review</strong> tab.
+              </div>
+            )}
             {incomingQueue.length === 0 ? (
               <div className="empty">No messages in the processing queue.</div>
             ) : (
