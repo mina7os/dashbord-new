@@ -157,71 +157,57 @@ function getReceiverIdentity(tx: Transaction) {
   return { label: primary, aliases, key };
 }
 
-function shouldMergeReceiverNames(a: string, b: string) {
-  const left = normalizeEntityName(a);
-  const right = normalizeEntityName(b);
-  if (!left || !right) return false;
-  return left === right || left.includes(right) || right.includes(left);
-}
-
 function buildReceiverSummaries(transactions: Transaction[]) {
-  const groups: Array<{
-    names: Set<string>;
-    normalizedNames: Set<string>;
+  const groups = new Map<string, {
+    key: string;
+    label: string;
+    aliases: Set<string>;
     total: number;
     currency: string;
     count: number;
-  }> = [];
+  }>();
 
   for (const tx of transactions) {
-    const rawNames = [tx.beneficiary_name, tx.client_name]
-      .map((value) => String(value || '').trim())
-      .filter(Boolean);
-    const uniqueNames = Array.from(new Set(rawNames));
-    const normalizedNames = uniqueNames.map(normalizeEntityName).filter(Boolean);
+    const receiver = getReceiverIdentity(tx);
+    const key = normalizeEntityName(receiver.label) || receiver.key || 'unknown-receiver';
     const amount = Math.abs(Number(tx.amount) || 0);
     const currency = tx.currency || 'EGP';
+    const current = groups.get(key) || {
+      key,
+      label: receiver.label,
+      aliases: new Set<string>(),
+      total: 0,
+      currency,
+      count: 0,
+    };
 
-    let targetGroup = groups.find((group) =>
-      normalizedNames.some((name) =>
-        Array.from(group.normalizedNames).some((existing) => shouldMergeReceiverNames(name, existing))
-      )
-    );
-
-    if (!targetGroup) {
-      targetGroup = {
-        names: new Set<string>(),
-        normalizedNames: new Set<string>(),
-        total: 0,
-        currency,
-        count: 0,
-      };
-      groups.push(targetGroup);
+    if (receiver.label.length > current.label.length) {
+      current.aliases.add(current.label);
+      current.label = receiver.label;
+    } else if (receiver.label !== current.label) {
+      current.aliases.add(receiver.label);
     }
 
-    for (const name of uniqueNames) targetGroup.names.add(name);
-    for (const name of normalizedNames) targetGroup.normalizedNames.add(name);
+    for (const alias of receiver.aliases) {
+      if (alias && alias !== current.label) {
+        current.aliases.add(alias);
+      }
+    }
 
-    targetGroup.total += amount;
-    targetGroup.count += 1;
+    current.total += amount;
+    current.count += 1;
+    groups.set(key, current);
   }
 
-  return groups
-    .map((group) => {
-      const names = Array.from(group.names).sort((a, b) => b.length - a.length);
-      const label = names[0] || 'Unknown Receiver';
-      const aliases = names.slice(1);
-      const key = Array.from(group.normalizedNames).sort().join('|') || normalizeEntityName(label) || 'unknown-receiver';
-
-      return {
-        key,
-        label,
-        aliases,
-        total: group.total,
-        currency: group.currency,
-        count: group.count,
-      };
-    })
+  return Array.from(groups.values())
+    .map((group) => ({
+      key: group.key,
+      label: group.label,
+      aliases: Array.from(group.aliases).filter((alias) => normalizeEntityName(alias) !== normalizeEntityName(group.label)),
+      total: group.total,
+      currency: group.currency,
+      count: group.count,
+    }))
     .sort((a, b) => b.total - a.total);
 }
 
@@ -489,7 +475,6 @@ export default function App() {
   const [page, setPage] = useState(0);
    const [selectedReviewItem, setSelectedReviewItem] = useState<ReviewItem | null>(null);
   const [selectedInspectId, setSelectedInspectId] = useState<string | null>(null);
-  const [receiverSummaryExpanded, setReceiverSummaryExpanded] = useState(false);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [degradedMode, setDegradedMode] = useState<boolean>(false);
   const [access, setAccess] = useState<AccessState | null>(null);
@@ -951,10 +936,6 @@ export default function App() {
   }, [filteredTransactions]);
 
   const receiverSummaries = useMemo(() => buildReceiverSummaries(filteredTransactions), [filteredTransactions]);
-  const visibleReceiverSummaries = useMemo(
-    () => (receiverSummaryExpanded ? receiverSummaries : receiverSummaries.slice(0, 8)),
-    [receiverSummaries, receiverSummaryExpanded]
-  );
 
   const paginatedTransactions = useMemo(() =>
     filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
@@ -1307,17 +1288,9 @@ export default function App() {
             )}
 
             <div className="stat-card glass" style={{ padding: '1rem', marginTop: '1rem' }}>
-              <div style={{ marginBottom: '0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                <div>
-                  <div className="label">Receiver Total Balances</div>
-                  <div className="sub">Grouped by similar receiver/company names into one row.</div>
-                </div>
-                <button
-                  onClick={() => setReceiverSummaryExpanded((value) => !value)}
-                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '8px 12px', color: 'var(--text)', cursor: 'pointer' }}
-                >
-                  {receiverSummaryExpanded ? 'Minimize' : 'Show More'}
-                </button>
+              <div style={{ marginBottom: '0.75rem' }}>
+                <div className="label">Receiver Total Balances</div>
+                <div className="sub">Similar receiver/company names are grouped into one row.</div>
               </div>
               {receiverSummaries.length === 0 ? (
                 <div className="sub">No receiver totals available for the current filters.</div>
@@ -1330,7 +1303,7 @@ export default function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {visibleReceiverSummaries.map(summary => (
+                      {receiverSummaries.map(summary => (
                         <tr key={summary.key}>
                           <td style={{ fontWeight: 600 }}>{summary.label}</td>
                           <td style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>{summary.aliases.length > 0 ? summary.aliases.join(' | ') : '-'}</td>
@@ -1342,11 +1315,6 @@ export default function App() {
                       ))}
                     </tbody>
                   </table>
-                </div>
-              )}
-              {receiverSummaries.length > 8 && !receiverSummaryExpanded && (
-                <div className="sub" style={{ marginTop: '0.75rem' }}>
-                  Showing 8 of {receiverSummaries.length} grouped receivers.
                 </div>
               )}
             </div>
