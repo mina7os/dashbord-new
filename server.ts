@@ -37,6 +37,41 @@ interface ServerDependencies {
   degradedMode: boolean;
 }
 
+function formatReviewReplySubject(txData: any) {
+  const sender = String(txData?.sender_name || '').trim();
+  const beneficiary = String(txData?.beneficiary_name || '').trim();
+  const amount = Number(txData?.amount || 0);
+  const currency = String(txData?.currency || 'EGP').trim() || 'EGP';
+  const amountText = amount > 0 ? `${amount.toLocaleString()} ${currency}` : currency;
+
+  if (sender && beneficiary) return `${sender} to ${beneficiary} (${amountText})`;
+  if (sender) return `${sender} (${amountText})`;
+  if (beneficiary) return `${beneficiary} (${amountText})`;
+  return `your transaction (${amountText})`;
+}
+
+function buildApprovedReviewReply(txData: any) {
+  const subject = formatReviewReplySubject(txData);
+  return `Received. ${subject} was approved and processed successfully. If this was a bank transfer or deposit, balance updates may take 1 to 2 days to appear.`;
+}
+
+function buildRejectedReviewReply(txData: any) {
+  const subject = formatReviewReplySubject(txData);
+  return `Received. ${subject} was reviewed and rejected, so it was not added to the transactions page.`;
+}
+
+async function sendReviewActionReply(deps: ServerDependencies, userId: string, chatId: string | null | undefined, text: string) {
+  const trimmedChatId = String(chatId || '').trim();
+  const trimmedText = String(text || '').trim();
+  if (!trimmedChatId || !trimmedText) return;
+
+  try {
+    await deps.whatsapp.sendMessageToChat(userId, trimmedChatId, trimmedText);
+  } catch (err) {
+    console.warn('[Review] Auto reply failed:', (err as any)?.message || err);
+  }
+}
+
 /** ─── Middleware ──────────────────────────────────────────────────────────── */
 const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   const authHeader = req.headers.authorization;
@@ -718,7 +753,7 @@ function registerReviewRoutes(api: express.Router, deps: ServerDependencies) {
       const { saveTransactionToOutputs, upsertDailyMetrics, incrementMetric } = await import('./src/services/transactionService.ts');
       const { advanceStage } = await import('./src/services/whatsapp/incomingMessages.ts');
       const targetUserId = item.user_id;
-      const { data: incomingRow } = await supabaseAdmin.from('incoming_messages').select('id').eq('user_id', targetUserId).eq('message_id', item.message_id).maybeSingle();
+      const { data: incomingRow } = await supabaseAdmin.from('incoming_messages').select('id,chat_id').eq('user_id', targetUserId).eq('message_id', item.message_id).maybeSingle();
 
       if (action === 'reject') {
         await Promise.all([
@@ -735,6 +770,7 @@ function registerReviewRoutes(api: express.Router, deps: ServerDependencies) {
           reason: comment,
           metadata: { reviewAction: action, messageId: item.message_id },
         });
+        await sendReviewActionReply(deps, targetUserId, incomingRow?.chat_id, buildRejectedReviewReply(item.suggested_data));
         return res.json({ status: 'rejected' });
       }
 
@@ -764,6 +800,7 @@ function registerReviewRoutes(api: express.Router, deps: ServerDependencies) {
           messageId: item.message_id,
         },
       });
+      await sendReviewActionReply(deps, targetUserId, incomingRow?.chat_id, buildApprovedReviewReply(txData));
       return res.json({ status: 'approved' });
     } catch (err: any) {
       res.status(500).json({ error: err.message || 'Failed to process review action' });
