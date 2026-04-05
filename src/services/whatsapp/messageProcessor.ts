@@ -227,11 +227,7 @@ export class MessageProcessor {
 
       try {
         if (reviewRequired || tx.review_required) {
-          await supabaseAdmin.from('review_queue').insert([{
-            user_id: userId, message_id: row.message_id, raw_text: tx.raw_text,
-            suggested_data: tx, reason: result.review_reason || tx.review_reason || 'Manual review',
-            confidence: tx.confidence || result.confidence, review_status: 'pending'
-          }]);
+          await this.ensureReviewQueueEntry(userId, row, tx, result.review_reason || tx.review_reason || 'Manual review', tx.confidence || result.confidence, result);
         } else {
           const saved = await saveTransactionToOutputs(tx, context);
           savedTransactions.push({ tx, saved });
@@ -356,20 +352,106 @@ export class MessageProcessor {
   private async createReviewFallback(userId: string, row: IncomingMessageRow, result: any, reason: string) {
     try {
       for (const tx of result.transactions) {
-        await supabaseAdmin.from('review_queue').upsert([{
-          user_id: userId,
-          message_id: row.message_id,
-          raw_text: tx.raw_text || row.raw_text || result.ocr_text || null,
-          suggested_data: tx,
+        await this.ensureReviewQueueEntry(
+          userId,
+          row,
+          tx,
           reason,
-          confidence: tx.confidence || result.confidence,
-          review_status: 'pending',
-        }], { onConflict: 'user_id,message_id' });
+          tx.confidence || result.confidence,
+          result
+        );
       }
       return true;
     } catch (reviewErr) {
       console.error(`[MessageProcessor | ${userId}] Review fallback failed row=${row.id}:`, reviewErr);
       return false;
+    }
+  }
+
+  private async ensureLegacyRawMessageBridge(row: IncomingMessageRow, result?: any) {
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from('raw_messages')
+      .select('id')
+      .eq('message_id', row.message_id)
+      .maybeSingle();
+
+    if (existingError) {
+      throw new Error(`raw_messages lookup failed: ${existingError.message}`);
+    }
+    if (existing?.id) return;
+
+    const attachmentType = row.actual_mime_type === 'application/pdf'
+      ? 'pdf'
+      : (row.actual_mime_type?.startsWith('image/') ? 'image' : (result?.source_type || 'text'));
+
+    const { error } = await supabaseAdmin.from('raw_messages').insert([{
+      user_id: row.user_id,
+      message_id: row.message_id,
+      message_text: row.raw_text || result?.ocr_text || '(binary media)',
+      sender_name: row.sender_name || 'Unknown',
+      sender_phone: row.sender_id || row.chat_id || 'unknown',
+      group_name: row.chat_id || null,
+      attachment_url: row.media_url || null,
+      attachment_type: attachmentType,
+      status: 'pending_review',
+    }]);
+
+    if (error) {
+      throw new Error(`raw_messages bridge insert failed: ${error.message}`);
+    }
+  }
+
+  private async ensureReviewQueueEntry(
+    userId: string,
+    row: IncomingMessageRow,
+    tx: any,
+    reason: string,
+    confidence: number,
+    result?: any
+  ) {
+    await this.ensureLegacyRawMessageBridge(row, result);
+
+    const { data: existing, error: existingError } = await supabaseAdmin
+      .from('review_queue')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('message_id', row.message_id)
+      .eq('review_status', 'pending')
+      .maybeSingle();
+
+    if (existingError) {
+      throw new Error(`review_queue lookup failed: ${existingError.message}`);
+    }
+
+    if (existing?.id) {
+      const { error: updateError } = await supabaseAdmin
+        .from('review_queue')
+        .update({
+          raw_text: tx.raw_text || row.raw_text || result?.ocr_text || null,
+          suggested_data: tx,
+          reason,
+          confidence,
+        })
+        .eq('id', existing.id);
+      if (updateError) {
+        throw new Error(`review_queue update failed: ${updateError.message}`);
+      }
+      return;
+    }
+
+    const { error } = await supabaseAdmin.from('review_queue').insert([{
+      user_id: userId,
+      message_id: row.message_id,
+      raw_text: tx.raw_text || row.raw_text || result?.ocr_text || null,
+      suggested_data: tx,
+      reason,
+      confidence,
+      attachment_url: row.media_url || null,
+      review_status: 'pending',
+    }]);
+
+    if (error) {
+      throw new Error(`review_queue insert failed: ${error.message}`);
     }
   }
 
