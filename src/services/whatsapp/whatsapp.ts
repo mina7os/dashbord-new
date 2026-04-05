@@ -23,6 +23,7 @@ const WA_REPLY_READY_ATTEMPTS = Number(process.env.WA_REPLY_READY_ATTEMPTS || 6)
 const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_INTERVAL_MS || 20000);
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
 const WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS = Number(process.env.WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS || 1800);
+const WA_MESSAGE_DEDUPE_TTL_MS = Number(process.env.WA_MESSAGE_DEDUPE_TTL_MS || 10 * 60 * 1000);
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
@@ -239,6 +240,7 @@ export class WhatsAppManager {
   private ignoredOutgoingMessages: Map<string, Set<string>> = new Map();
   private ignoredOutgoingTexts: Map<string, Set<string>> = new Map();
   private activeChatSyncTimers: Map<string, NodeJS.Timeout> = new Map();
+  private recentlySeenMessages: Map<string, number> = new Map();
 
   private io: Server;
 
@@ -586,6 +588,12 @@ export class WhatsAppManager {
       return 'skipped';
     }
 
+    const seenKey = `${userId}:${messageId}`;
+    if (this.isRecentlySeenMessage(seenKey)) {
+      console.log(`[WhatsApp | ${userId}] Duplicate message ignored via recent dedupe: ID=${messageId} event=${eventName}`);
+      return 'skipped';
+    }
+
     const iFKey = `${userId}:${messageId}`;
     if (this.inFlightMessages.has(iFKey)) return 'skipped';
     this.inFlightMessages.add(iFKey);
@@ -604,6 +612,7 @@ export class WhatsAppManager {
         .eq('message_id', messageId)
         .maybeSingle();
       if (existingIncoming?.id) {
+        this.rememberSeenMessage(seenKey);
         return 'skipped';
       }
 
@@ -644,6 +653,8 @@ export class WhatsAppManager {
 
       if (!incomingId) return 'skipped';
 
+      this.rememberSeenMessage(seenKey);
+
       await incrementMetric(userId, 'total_messages');
       if (mediaCaptureStage === 'media_persisted') await incrementMetric(userId, 'media_capture_success');
       else if (mediaCaptureStage === 'media_capture_failed') await incrementMetric(userId, 'media_capture_failed');
@@ -658,6 +669,26 @@ export class WhatsAppManager {
     } finally {
       this.inFlightMessages.delete(iFKey);
     }
+  }
+
+  private isRecentlySeenMessage(key: string): boolean {
+    const seenAt = this.recentlySeenMessages.get(key);
+    if (!seenAt) return false;
+    if (Date.now() - seenAt > WA_MESSAGE_DEDUPE_TTL_MS) {
+      this.recentlySeenMessages.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  private rememberSeenMessage(key: string) {
+    this.recentlySeenMessages.set(key, Date.now());
+    setTimeout(() => {
+      const seenAt = this.recentlySeenMessages.get(key);
+      if (seenAt && Date.now() - seenAt >= WA_MESSAGE_DEDUPE_TTL_MS) {
+        this.recentlySeenMessages.delete(key);
+      }
+    }, WA_MESSAGE_DEDUPE_TTL_MS + 1000);
   }
 
   async getAvailableChats(userId: string) {
