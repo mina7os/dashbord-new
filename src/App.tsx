@@ -198,6 +198,36 @@ const EMPTY_TRANSACTION_FILTERS: TransactionFilters = {
   receiver: '',
 };
 
+function simplifyReviewReason(reason?: string | null, suggestedData?: any) {
+  const rawReason = String(reason || '').trim().toLowerCase();
+  const tx = suggestedData || {};
+
+  const missingAmount = !tx.amount || Number(tx.amount) <= 0;
+  const missingBank = !String(tx.bank_name || '').trim();
+  const missingReceiver = !String(tx.beneficiary_name || tx.client_name || '').trim();
+  const missingReference = !String(tx.reference_number || '').trim();
+
+  if (missingAmount) return 'Check the transaction amount before approval.';
+  if (missingBank) return 'Check the bank name before approval.';
+  if (missingReceiver) return 'Check the receiver name before approval.';
+  if (missingReference) return 'Check the reference number before approval.';
+
+  if (rawReason.includes('saved inconsistently') || rawReason.includes('persistence')) {
+    return 'Check the extracted details before approval.';
+  }
+  if (rawReason.includes('numeric amount') || rawReason.includes('amount written in words')) {
+    return 'Check the transaction amount before approval.';
+  }
+  if (rawReason.includes('low confidence')) {
+    return 'Check the extracted details before approval.';
+  }
+  if (rawReason.includes('manual review')) {
+    return 'Review the extracted details and approve or reject.';
+  }
+
+  return 'Review the extracted details and approve or reject.';
+}
+
 function normalizeEntityName(value?: string | null) {
   return String(value || '')
     .toLowerCase()
@@ -1623,12 +1653,17 @@ export default function App() {
             ) : reviewQueue.map(item => (
               <div key={item.id} className="queue-card">
                 <div style={{ flex: 1 }}>
-                  <div className="q-reason">Ambiguous / Low Confidence Transaction</div>
+                  <div className="q-reason">{simplifyReviewReason(item.reason, item.suggested_data)}</div>
                   <div className="q-msg">{item.raw_text || '(no raw text)'}</div>
                   {item.suggested_data?.amount && (
                     <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
                       Suggested: <strong style={{ color: 'var(--text)' }}>{item.suggested_data.amount} {item.suggested_data.currency || 'EGP'}</strong>
                       {item.suggested_data.sender_name && <> | {item.suggested_data.sender_name}</>}
+                    </div>
+                  )}
+                  {item.reason && (
+                    <div style={{ marginTop: '0.45rem', fontSize: '0.75rem', color: 'var(--muted)' }}>
+                      System note: {item.reason}
                     </div>
                   )}
                   <div style={{ marginTop: '0.5rem' }}>
