@@ -58,7 +58,7 @@ MODALITY IDENTIFICATION:
 FINANCIAL CLASSIFICATION:
 - Is this content a financial transaction (receipt, transfer, deposit, bill payment)?
 
-REGIONAL FOCUS (INDIA):
+REGIONAL FOCUS (EGYPT + INDIA):
 - Support for Indian formats: INR, ₹.
 - Recognize UPI transaction IDs (12 digits, e.g., 412345678901).
 - Recognize Indian banks: SBI, HDFC, ICICI, Axis, PNB, Kotak, etc.
@@ -70,6 +70,7 @@ EXTRACTION RULES:
 - Also extract "transaction_location" from branch/city/governorate/location fields such as Aswan / Aswan.
 - Handle WhatsApp/SMS bank alerts for EGP, USD, and INR, including UPI, IMPS, NEFT, and RTGS references.
 - Standardize transaction_type: "transfer", "deposit", "instapay", "payment", "upi".
+- If the document clearly shows a bank logo, bank acronym, or bank header, use it to fill "bank_name".
 - SENDER_CODE: Extract digits like (***1234) into "sender_code".
 - SENDER_NAME: Strip trailing digits.
 - CONFIDENCE: 1.0 for perfect clarity, 0.7 for handwriting/blurry.
@@ -114,6 +115,42 @@ function trimCapturedName(value?: string | null): string | null {
     .replace(/\s+(?:a\/c|acct|account|upi|ref|utr)\b.*$/i, '')
     .replace(/[.,;:]+$/, '')
     .trim() || null;
+}
+
+function inferBankNameFromContent(content?: string | null): string | null {
+  const normalized = String(content || '').toLowerCase();
+  if (!normalized) return null;
+
+  const bankMatchers: Array<[RegExp, string]> = [
+    [/\bcib\b|commercial\s+international\s+bank/, 'Commercial International Bank'],
+    [/\bbanque\s+misr\b|\bbank\s+misr\b/, 'Banque Misr'],
+    [/\bnational\s+bank\s+of\s+egypt\b|\bnbe\b/, 'National Bank of Egypt'],
+    [/\bqnb\b|\bqnb\s+alahli\b/, 'QNB Alahli'],
+    [/\balex\s*bank\b|\balexbank\b/, 'AlexBank'],
+    [/\bhsbc\b/, 'HSBC'],
+    [/\bsaib\b/, 'SAIB'],
+    [/\bcredit\s+agricole\b/, 'Credit Agricole'],
+    [/\bfaisal\b/, 'Faisal Islamic Bank'],
+    [/\battijariwafa\b/, 'Attijariwafa Bank'],
+  ];
+
+  for (const [pattern, label] of bankMatchers) {
+    if (pattern.test(normalized)) return label;
+  }
+
+  return null;
+}
+
+function backfillTransactionBankName(tx: ExtractedTransaction, content?: string | null): ExtractedTransaction {
+  if (tx.bank_name && String(tx.bank_name).trim()) return tx;
+
+  const inferred = inferBankNameFromContent(content);
+  if (inferred) {
+    tx.bank_name = inferred;
+    tx.confidence = Math.max(tx.confidence ?? 0, 0.88);
+  }
+
+  return tx;
 }
 
 function tryRuleBasedExtraction(messageText: string): RuleMatchResult | null {
@@ -524,6 +561,7 @@ export async function extractMessage(
           confidence: ruleResult.confidence,
           processing_status: ruleResult.confidence < 0.7 ? 'pending_review' : 'completed'
         };
+        backfillTransactionBankName(tx, ocr_text);
 
         return {
           status: ruleResult.confidence < 0.7 ? 'LOW_CONFIDENCE' : 'SUCCESS',
@@ -599,6 +637,7 @@ export async function extractMessage(
         confidence: t.confidence ?? parsed.confidence ?? 0.5,
         processing_status: ((t.confidence ?? parsed.confidence ?? 0.5) < 0.7) ? 'pending_review' : 'completed'
       }))
+      .map((tx: ExtractedTransaction) => backfillTransactionBankName(tx, ocr_text))
       .map(reconcileAmounts);
 
     const confidence = parsed.confidence || 0.5;
