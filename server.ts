@@ -592,6 +592,121 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.get('/inspect/:id', async (req: any, res) => res.redirect(`/api/pipeline/incoming/${req.params.id}`));
 
+  api.patch('/pipeline/incoming/:id/send-to-review', async (req: any, res) => {
+    try {
+      if (!req.access.canReview && !req.access.canReadAllData) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+
+      const { data: incoming, error: incomingError } = await supabaseAdmin
+        .from('incoming_messages')
+        .select('*')
+        .eq('id', req.params.id)
+        .maybeSingle();
+
+      if (incomingError) throw incomingError;
+      if (!incoming) return res.status(404).json({ error: 'Incoming message not found.' });
+      if (!req.access.canReadAllData && incoming.user_id !== req.access.userId) {
+        return res.status(403).json({ error: 'Access denied.' });
+      }
+
+      const { data: rawBridge } = await supabaseAdmin
+        .from('raw_messages')
+        .select('id')
+        .eq('message_id', incoming.message_id)
+        .maybeSingle();
+
+      if (!rawBridge?.id) {
+        const attachmentType = incoming.actual_mime_type === 'application/pdf'
+          ? 'pdf'
+          : (incoming.actual_mime_type?.startsWith('image/') ? 'image' : 'text');
+
+        const { error: rawInsertError } = await supabaseAdmin.from('raw_messages').insert([{
+          user_id: incoming.user_id,
+          message_id: incoming.message_id,
+          message_text: incoming.raw_text || '(binary media)',
+          sender_name: incoming.sender_name || 'Unknown',
+          sender_phone: incoming.sender_id || incoming.chat_id || 'unknown',
+          group_name: incoming.chat_id || null,
+          attachment_url: incoming.media_url || null,
+          attachment_type: attachmentType,
+          status: 'pending_review',
+        }]);
+
+        if (rawInsertError) {
+          throw new Error(`Failed to create review bridge: ${rawInsertError.message}`);
+        }
+      }
+
+      const reviewReason = 'Duplicate flag overridden for manual review.';
+      const suggestedData = {
+        sender_name: incoming.sender_name || '',
+        beneficiary_name: '',
+        client_name: '',
+        bank_name: '',
+        amount: null,
+        currency: 'EGP',
+        reference_number: null,
+        transaction_type: 'transfer',
+        review_required: true,
+        review_reason: reviewReason,
+      };
+
+      const { data: existingReview } = await supabaseAdmin
+        .from('review_queue')
+        .select('id')
+        .eq('user_id', incoming.user_id)
+        .eq('message_id', incoming.message_id)
+        .eq('review_status', 'pending')
+        .maybeSingle();
+
+      if (existingReview?.id) {
+        const { error: reviewUpdateError } = await supabaseAdmin
+          .from('review_queue')
+          .update({
+            raw_text: incoming.raw_text || null,
+            suggested_data: suggestedData,
+            reason: reviewReason,
+            confidence: incoming.extraction_confidence || 0.3,
+            attachment_url: incoming.media_url || null,
+          })
+          .eq('id', existingReview.id);
+
+        if (reviewUpdateError) throw reviewUpdateError;
+      } else {
+        const { error: reviewInsertError } = await supabaseAdmin.from('review_queue').insert([{
+          user_id: incoming.user_id,
+          message_id: incoming.message_id,
+          raw_text: incoming.raw_text || null,
+          suggested_data: suggestedData,
+          reason: reviewReason,
+          confidence: incoming.extraction_confidence || 0.3,
+          attachment_url: incoming.media_url || null,
+          review_status: 'pending',
+        }]);
+
+        if (reviewInsertError) throw reviewInsertError;
+      }
+
+      const { error: incomingUpdateError } = await supabaseAdmin
+        .from('incoming_messages')
+        .update({
+          processing_stage: 'review',
+          processing_status: 'review_required',
+          review_reason: reviewReason,
+          processed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', incoming.id);
+
+      if (incomingUpdateError) throw incomingUpdateError;
+
+      res.json({ status: 'sent_to_review', id: incoming.id, message_id: incoming.message_id });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to move duplicate to review.' });
+    }
+  });
+
   api.post('/ingest', async (req: any, res) => {
     try {
       requireRole(req.access, ['manager']);

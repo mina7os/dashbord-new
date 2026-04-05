@@ -705,6 +705,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const sessionRef = useRef<Session | null>(null); // Fix H5: stale closure
   const [tab, setTab] = useState<'transactions' | 'review' | 'queue' | 'integrations'>('transactions');
+  const [queueFilter, setQueueFilter] = useState<'all' | 'pending' | 'duplicates'>('all');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [reviewQueue, setReviewQueue] = useState<ReviewItem[]>([]);
   const [incomingQueue, setIncomingQueue] = useState<QueueItem[]>([]);
@@ -1220,7 +1221,17 @@ export default function App() {
     () => incomingQueue.filter(item => item.processing_status === 'pending'),
     [incomingQueue]
   );
+  const duplicateIncomingItems = useMemo(
+    () => incomingQueue.filter(item => item.processing_status.includes('duplicate')),
+    [incomingQueue]
+  );
   const actionablePendingCount = reviewQueue.length + pendingIncomingItems.length;
+  const liveDuplicateCount = duplicateIncomingItems.length;
+  const filteredQueueItems = useMemo(() => {
+    if (queueFilter === 'pending') return pendingIncomingItems;
+    if (queueFilter === 'duplicates') return duplicateIncomingItems;
+    return incomingQueue;
+  }, [queueFilter, pendingIncomingItems, duplicateIncomingItems, incomingQueue]);
 
   const paginatedTransactions = useMemo(() =>
     filteredTransactions.slice(page * ITEMS_PER_PAGE, (page + 1) * ITEMS_PER_PAGE),
@@ -1246,6 +1257,16 @@ export default function App() {
     addToast('No pending items are available right now.', 'info');
   }, [reviewQueue.length, canSeeReview, pendingIncomingItems.length, canSeeQueue, addToast]);
 
+  const openDuplicateItems = useCallback(() => {
+    if (duplicateIncomingItems.length > 0 && canSeeQueue) {
+      setQueueFilter('duplicates');
+      setTab('queue');
+      return;
+    }
+
+    addToast('No duplicate messages are available right now.', 'info');
+  }, [duplicateIncomingItems.length, canSeeQueue, addToast]);
+
   useEffect(() => {
     if (page > 0 && totalPages > 0 && page >= totalPages) {
       setPage(totalPages - 1);
@@ -1257,6 +1278,28 @@ export default function App() {
     if (tab === 'queue' && !canSeeQueue) setTab('transactions');
     if (tab === 'integrations' && !canSeeIntegrations) setTab('transactions');
   }, [tab, canSeeReview, canSeeQueue, canSeeIntegrations]);
+
+  const handleSendDuplicateToReview = useCallback(async (incomingId: string) => {
+    if (!session) return;
+    try {
+      const res = await fetch(`/api/pipeline/incoming/${incomingId}/send-to-review`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to send duplicate to review');
+
+      addToast('Duplicate message moved to review for manual correction.', 'success');
+      setQueueFilter('all');
+      setTab('review');
+      void loadData(false);
+    } catch (err: any) {
+      addToast(`Failed: ${err.message}`, 'error');
+    }
+  }, [session, addToast, loadData]);
 
   // â”€â”€â”€ Badges â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const statusBadge = (status: string) => {
@@ -1457,9 +1500,16 @@ export default function App() {
                       : 'No pending actions right now.'}
                 </div>
               </div>
-              <div className="stat-card glass">
+              <div
+                className="stat-card glass"
+                onClick={openDuplicateItems}
+                style={{ cursor: liveDuplicateCount > 0 ? 'pointer' : 'default' }}
+              >
                 <div className="label">Duplicates</div>
-                <div className="value" style={{ color: 'var(--red)' }}>{stats?.duplicates ?? 0}</div>
+                <div className="value" style={{ color: 'var(--red)' }}>{liveDuplicateCount}</div>
+                <div className="sub">
+                  {liveDuplicateCount > 0 ? 'Click to inspect duplicate messages.' : 'No duplicate actions right now.'}
+                </div>
               </div>
             </div>
           </>
@@ -1706,14 +1756,33 @@ export default function App() {
         {/* Queue Tab */}
         {tab === 'queue' && (
           <div className="table-wrap">
-            {pendingIncomingItems.length > 0 && (
+            <div style={{ padding: '0.9rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+              <div style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>
+                {queueFilter === 'duplicates'
+                  ? `${duplicateIncomingItems.length} duplicate message${duplicateIncomingItems.length === 1 ? '' : 's'} detected.`
+                  : queueFilter === 'pending'
+                    ? `${pendingIncomingItems.length} pending message${pendingIncomingItems.length === 1 ? '' : 's'} in processing.`
+                    : `${incomingQueue.length} queue item${incomingQueue.length === 1 ? '' : 's'} available.`}
+                {' '}
+                Use <strong style={{ color: 'var(--text)' }}>Inspect</strong> to see details.
+                {queueFilter === 'duplicates'
+                  ? ' If the duplicate flag is wrong, use Send to Review.'
+                  : ' If a message needs your action, it will move to the Review tab.'}
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                <button onClick={() => setQueueFilter('all')} style={{ background: queueFilter === 'all' ? 'rgba(99,102,241,0.15)' : 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '999px', padding: '6px 10px', color: queueFilter === 'all' ? 'var(--accent)' : 'var(--text)', cursor: 'pointer', fontSize: '0.75rem' }}>All</button>
+                <button onClick={() => setQueueFilter('pending')} style={{ background: queueFilter === 'pending' ? 'rgba(245,158,11,0.15)' : 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '999px', padding: '6px 10px', color: queueFilter === 'pending' ? 'var(--yellow)' : 'var(--text)', cursor: 'pointer', fontSize: '0.75rem' }}>Pending</button>
+                <button onClick={() => setQueueFilter('duplicates')} style={{ background: queueFilter === 'duplicates' ? 'rgba(239,68,68,0.12)' : 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '999px', padding: '6px 10px', color: queueFilter === 'duplicates' ? '#ef4444' : 'var(--text)', cursor: 'pointer', fontSize: '0.75rem' }}>Duplicates</button>
+              </div>
+            </div>
+            {queueFilter !== 'duplicates' && pendingIncomingItems.length > 0 && (
               <div style={{ padding: '0.9rem 1rem', borderBottom: '1px solid var(--border)', color: 'var(--muted)', fontSize: '0.85rem' }}>
                 {pendingIncomingItems.length} pending message{pendingIncomingItems.length === 1 ? '' : 's'} in processing.
                 Use <strong style={{ color: 'var(--text)' }}>Inspect</strong> to see the message details.
                 If a message needs your action, it will move to the <strong style={{ color: 'var(--text)' }}>Review</strong> tab.
               </div>
             )}
-            {incomingQueue.length === 0 ? (
+            {filteredQueueItems.length === 0 ? (
               <div className="empty">No messages in the processing queue.</div>
             ) : (
               <table>
@@ -1723,7 +1792,7 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {incomingQueue.map(item => (
+                  {filteredQueueItems.map(item => (
                     <tr key={item.id}>
                       <td style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>{new Date(item.received_at).toLocaleString()}</td>
                       <td style={{ fontWeight: 600, textTransform: 'uppercase', fontSize: '0.75rem' }}>{item.processing_stage}</td>
@@ -1733,10 +1802,15 @@ export default function App() {
                         </span>
                       </td>
                       <td>{item.attempt_count}</td>
-                      <td>
+                      <td style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                         <button onClick={() => setSelectedInspectId(item.id)} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 8px', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.75rem' }}>
                           Inspect
                         </button>
+                        {item.processing_status.includes('duplicate') && (
+                          <button onClick={() => handleSendDuplicateToReview(item.id)} style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.3)', borderRadius: '6px', padding: '4px 8px', color: 'var(--yellow)', cursor: 'pointer', fontSize: '0.75rem' }}>
+                            Send to Review
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
