@@ -224,7 +224,17 @@ export class MessageProcessor {
         await markCompletedDuplicate(
           row.id,
           `Duplicate reference detected: ${tx.reference_number}`,
-          tx.reference_number
+          tx.reference_number,
+          {
+            sender_name: tx.sender_name || row.sender_name || '',
+            beneficiary_name: tx.beneficiary_name || '',
+            client_name: tx.client_name || '',
+            bank_name: tx.bank_name || '',
+            amount: tx.amount ?? null,
+            currency: tx.currency || 'EGP',
+            reference_number: tx.reference_number || null,
+            transaction_type: tx.transaction_type || 'transfer',
+          }
         );
         this.sendReplySafe(userId, row.chat_id, this.buildDuplicateReply(tx));
         return; 

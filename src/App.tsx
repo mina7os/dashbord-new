@@ -144,6 +144,28 @@ interface QueueItem {
   metadata?: any;
 }
 
+function duplicateDetailLines(item: QueueItem): string[] {
+  const candidate = item.metadata?.duplicate_candidate || {};
+  const lines: string[] = [];
+
+  const sender = String(candidate.sender_name || '').trim();
+  const receiver = String(candidate.beneficiary_name || candidate.client_name || '').trim();
+  const bank = String(candidate.bank_name || '').trim();
+  const reference = String(candidate.reference_number || item.metadata?.duplicate_reference || '').trim();
+  const amountValue = candidate.amount;
+  const amount = amountValue != null && amountValue !== ''
+    ? `${Number(amountValue).toLocaleString()} ${candidate.currency || 'EGP'}`
+    : '';
+
+  if (sender) lines.push(`Sender: ${sender}`);
+  if (receiver) lines.push(`Receiver: ${receiver}`);
+  if (bank) lines.push(`Bank: ${bank}`);
+  if (reference) lines.push(`Reference: ${reference}`);
+  if (amount) lines.push(`Amount: ${amount}`);
+
+  return lines;
+}
+
 function getTransactionRowKey(tx: Transaction) {
   return String(tx.record_id ?? tx.id ?? tx.reference_number ?? tx.created_at);
 }
@@ -1857,6 +1879,13 @@ export default function App() {
                         {(item.review_reason || item.metadata?.duplicate_reference) && (
                           <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--muted)', maxWidth: '260px', lineHeight: 1.4 }}>
                             {item.review_reason || `Duplicate reference: ${item.metadata?.duplicate_reference}`}
+                          </div>
+                        )}
+                        {duplicateDetailLines(item).length > 0 && (
+                          <div style={{ marginTop: '0.35rem', fontSize: '0.72rem', color: 'var(--muted)', maxWidth: '260px', lineHeight: 1.45 }}>
+                            {duplicateDetailLines(item).map((line) => (
+                              <div key={line}>{line}</div>
+                            ))}
                           </div>
                         )}
                         {item.raw_text && (

@@ -638,16 +638,17 @@ function registerPipelineRoutes(api: express.Router, deps: ServerDependencies) {
         }
       }
 
+      const duplicateCandidate = incoming.metadata?.duplicate_candidate || {};
       const reviewReason = 'Duplicate flag overridden for manual review.';
       const suggestedData = {
-        sender_name: incoming.sender_name || '',
-        beneficiary_name: '',
-        client_name: '',
-        bank_name: '',
-        amount: null,
-        currency: 'EGP',
-        reference_number: null,
-        transaction_type: 'transfer',
+        sender_name: duplicateCandidate.sender_name || incoming.sender_name || '',
+        beneficiary_name: duplicateCandidate.beneficiary_name || '',
+        client_name: duplicateCandidate.client_name || '',
+        bank_name: duplicateCandidate.bank_name || '',
+        amount: duplicateCandidate.amount ?? null,
+        currency: duplicateCandidate.currency || 'EGP',
+        reference_number: duplicateCandidate.reference_number || incoming.metadata?.duplicate_reference || null,
+        transaction_type: duplicateCandidate.transaction_type || 'transfer',
         review_required: true,
         review_reason: reviewReason,
       };
