@@ -221,7 +221,7 @@ export class MessageProcessor {
       if (tx.reference_number && await checkDuplicateTransactionByReference(userId, tx.reference_number)) {
         await incrementMetric(userId, 'duplicates');
         await advanceStage(row.id, 'duplicate_reference', 'completed_duplicate');
-        this.sendReplySafe(userId, row.chat_id, this.buildDuplicateReply(tx.reference_number));
+        this.sendReplySafe(userId, row.chat_id, this.buildDuplicateReply(tx));
         return; 
       }
 
@@ -249,11 +249,11 @@ export class MessageProcessor {
         const reviewVisible = await this.waitForReviewVisible(userId, row.message_id);
         if (!reviewVisible) {
           await markFailedRetriable(row.id, 'Review persistence verification failed', 300000);
-          this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
+          this.sendReplySafe(userId, row.chat_id, this.buildFailureReply(result.transactions));
           return;
         }
         await markReviewRequired(row.id, result.review_reason || 'Needs review', result.confidence);
-        this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
+        this.sendReplySafe(userId, row.chat_id, this.buildReviewReply(result.transactions));
       } else {
         await incrementMetric(userId, 'successful_extractions');
         const transactionsVisible = await this.ensureTransactionsPersisted(userId, row, result, context, savedTransactions);
@@ -262,19 +262,19 @@ export class MessageProcessor {
           if (reviewCreated) {
             await incrementMetric(userId, 'pending_review');
             await markReviewRequired(row.id, 'Transaction saved inconsistently. Sent to manual review.', result.confidence);
-            this.sendReplySafe(userId, row.chat_id, this.buildReviewReply());
+            this.sendReplySafe(userId, row.chat_id, this.buildReviewReply(result.transactions));
             return;
           }
           await markFailedRetriable(row.id, 'Transaction persistence verification failed', 300000);
-          this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
+          this.sendReplySafe(userId, row.chat_id, this.buildFailureReply(result.transactions));
           return;
         }
         await markCompletedTransaction(row.id, { isFinancial: true, transactionCount: result.transactions.length });
-        this.sendReplySafe(userId, row.chat_id, this.buildSuccessReply(result.transactions.length));
+        this.sendReplySafe(userId, row.chat_id, this.buildSuccessReply(result.transactions));
       }
     } else {
       await markFailedRetriable(row.id, 'Transaction persistence failed', 300000);
-      this.sendReplySafe(userId, row.chat_id, this.buildFailureReply());
+      this.sendReplySafe(userId, row.chat_id, this.buildFailureReply(result.transactions));
     }
   }
 
@@ -391,23 +391,44 @@ export class MessageProcessor {
     return false;
   }
 
-  private buildSuccessReply(transactionCount: number) {
-    const suffix = transactionCount > 1 ? `${transactionCount} transactions were` : 'The transaction was';
-    return `Received. ${suffix} processed successfully. If this was a bank transfer, balance updates may take 1 to 2 days to appear.`;
+  private formatTransactionSubject(transactions: any[]) {
+    const first = transactions?.[0] || {};
+    const sender = String(first.sender_name || '').trim();
+    const amount = Number(first.amount) || 0;
+    const currency = String(first.currency || 'EGP').trim() || 'EGP';
+    const bank = String(first.bank_name || '').trim();
+    const beneficiary = String(first.beneficiary_name || '').trim();
+    const amountText = amount > 0 ? `${amount.toLocaleString()} ${currency}` : currency;
+
+    if (sender && beneficiary) return `${sender} to ${beneficiary} (${amountText})`;
+    if (sender) return `${sender} (${amountText})`;
+    if (beneficiary) return `${beneficiary} (${amountText})`;
+    if (bank) return `${bank} (${amountText})`;
+    return `your transaction (${amountText})`;
   }
 
-  private buildDuplicateReply(referenceNumber?: string) {
-    return referenceNumber
-      ? `Received. This transaction was already recorded under reference ${referenceNumber}.`
-      : 'Received. This transaction was already recorded.';
+  private buildSuccessReply(transactions: any[]) {
+    const transactionCount = transactions?.length || 0;
+    const subject = this.formatTransactionSubject(transactions);
+    const suffix = transactionCount > 1 ? `${transactionCount} transactions were` : `${subject} was`;
+    return `Received. ${suffix} processed successfully. If this was a bank transfer or deposit, balance updates may take 1 to 2 days to appear.`;
   }
 
-  private buildReviewReply() {
-    return 'Received. The transaction needs manual review before final confirmation.';
+  private buildDuplicateReply(tx?: any) {
+    const subject = this.formatTransactionSubject(tx ? [tx] : []);
+    return tx?.reference_number
+      ? `Received. ${subject} was already recorded under reference ${tx.reference_number}.`
+      : `Received. ${subject} was already recorded.`;
   }
 
-  private buildFailureReply() {
-    return 'Received, but processing could not be completed automatically. Please review it manually.';
+  private buildReviewReply(transactions: any[]) {
+    const subject = this.formatTransactionSubject(transactions);
+    return `Received. ${subject} needs manual review before final confirmation.`;
+  }
+
+  private buildFailureReply(transactions: any[]) {
+    const subject = this.formatTransactionSubject(transactions);
+    return `Received, but ${subject} could not be completed automatically. Please review it manually.`;
   }
 }
 

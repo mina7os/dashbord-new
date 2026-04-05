@@ -28,6 +28,25 @@ export interface SavedTransactionResult {
   idempotencyKey: string;
 }
 
+function isTransientSupabaseError(message?: string | null) {
+  const text = String(message || '').toLowerCase();
+  return (
+    text.includes('502') ||
+    text.includes('503') ||
+    text.includes('504') ||
+    text.includes('bad gateway') ||
+    text.includes('gateway') ||
+    text.includes('fetch failed') ||
+    text.includes('timeout') ||
+    text.includes('temporar') ||
+    text.includes('network')
+  );
+}
+
+async function pause(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Saves a single transaction to the 'transactions' table and enqueues to 'sheet_sync_queue'.
  */
@@ -37,34 +56,52 @@ export async function saveTransactionToOutputs(tx: ExtractedTransaction, context
   const idKey = `tx:${context.userId}:${tx.amount}:${normalizedRef}`;
 
   // 2. Save to Supabase (Source of Truth)
-  const { data: dbTx, error } = await supabaseAdmin
-    .from('transactions')
-    .upsert([{
-      user_id: context.userId,
-      message_id: tx.message_id, 
-      transaction_date: tx.transaction_date || new Date().toISOString().split('T')[0],
-      transaction_type: tx.transaction_type,
-      channel: 'whatsapp',
-      bank_name: tx.bank_name,
-      sender_name: tx.sender_name,
-      beneficiary_name: tx.beneficiary_name,
-      beneficiary_account: tx.beneficiary_account,
-      amount: tx.amount,
-      currency: tx.currency || 'EGP',
-      reference_number: tx.reference_number,
-      confidence: tx.confidence,
-      review_required: tx.review_required || false,
-      duplicate: tx.duplicate || false,
-      raw_text: tx.raw_text,
-      processing_status: 'completed',
-      idempotency_key: idKey
-    }], { onConflict: 'idempotency_key' })
-    .select('record_id')  // PK is record_id (bigint), not id
-    .single();
+  let dbTx: { record_id: number } | null = null;
+  let lastError: string | null = null;
 
-  if (error) {
-    console.error('[TransactionService] Supabase write failed:', error.message);
-    throw new Error(`Supabase save failed: ${error.message}`);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const { data, error } = await supabaseAdmin
+      .from('transactions')
+      .upsert([{
+        user_id: context.userId,
+        message_id: tx.message_id, 
+        transaction_date: tx.transaction_date || new Date().toISOString().split('T')[0],
+        transaction_type: tx.transaction_type,
+        channel: 'whatsapp',
+        bank_name: tx.bank_name,
+        sender_name: tx.sender_name,
+        beneficiary_name: tx.beneficiary_name,
+        beneficiary_account: tx.beneficiary_account,
+        amount: tx.amount,
+        currency: tx.currency || 'EGP',
+        reference_number: tx.reference_number,
+        confidence: tx.confidence,
+        review_required: tx.review_required || false,
+        duplicate: tx.duplicate || false,
+        raw_text: tx.raw_text,
+        processing_status: 'completed',
+        idempotency_key: idKey
+      }], { onConflict: 'idempotency_key' })
+      .select('record_id')
+      .single();
+
+    if (!error && data?.record_id) {
+      dbTx = data;
+      break;
+    }
+
+    lastError = error?.message || 'Unknown Supabase save failure';
+    console.error(`[TransactionService] Supabase write failed on attempt ${attempt}:`, lastError);
+
+    if (!isTransientSupabaseError(lastError) || attempt === 3) {
+      break;
+    }
+
+    await pause(500 * attempt);
+  }
+
+  if (!dbTx) {
+    throw new Error(`Supabase save failed: ${lastError || 'Unknown error'}`);
   }
 
   // 3. Queue for Google Sheets (Asynchronous and Observable)

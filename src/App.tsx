@@ -110,6 +110,31 @@ function normalizeEntityName(value?: string | null) {
     .trim();
 }
 
+function normalizeBankName(value?: string | null) {
+  const normalized = normalizeEntityName(value);
+  if (!normalized) return 'unknown bank';
+
+  const aliases: Array<[RegExp, string]> = [
+    [/\bbanque\s+misr\b|\bbank\s+misr\b|\bmisr\b/, 'Banque Misr'],
+    [/\bnational\s+bank\s+of\s+egypt\b|\bnbe\b/, 'National Bank of Egypt'],
+    [/\bcib\b|\bcommercial\s+international\s+bank\b/, 'Commercial International Bank'],
+    [/\bqnb\b|\bqnb\s+alahli\b|\bqnb\s+alahli\b/, 'QNB Alahli'],
+    [/\bhsbc\b/, 'HSBC'],
+    [/\bsaib\b/, 'SAIB'],
+    [/\bcredit\s+agricole\b/, 'Credit Agricole'],
+    [/\balex\s*bank\b|\balexbank\b/, 'AlexBank'],
+    [/\battijariwafa\b/, 'Attijariwafa Bank'],
+    [/\bfaisal\b/, 'Faisal Islamic Bank'],
+    [/\babk\b|\bahli\s+united\b/, 'Ahli United Bank'],
+  ];
+
+  for (const [pattern, label] of aliases) {
+    if (pattern.test(normalized)) return label;
+  }
+
+  return String(value || 'Unknown Bank').trim() || 'Unknown Bank';
+}
+
 function getReceiverIdentity(tx: Transaction) {
   const candidates = [tx.beneficiary_name, tx.client_name]
     .map((value) => String(value || '').trim())
@@ -825,7 +850,7 @@ export default function App() {
       (!transactionFilters.dateFrom || String(tx.transaction_date || tx.created_at).slice(0, 10) >= transactionFilters.dateFrom) &&
       (!transactionFilters.dateTo || String(tx.transaction_date || tx.created_at).slice(0, 10) <= transactionFilters.dateTo) &&
       (!transactionFilters.type || String(tx.transaction_type || '') === transactionFilters.type) &&
-      (!transactionFilters.bank || String(tx.bank_name || '') === transactionFilters.bank) &&
+      (!transactionFilters.bank || normalizeBankName(tx.bank_name) === transactionFilters.bank) &&
       (!transactionFilters.status || String(tx.processing_status || '') === transactionFilters.status) &&
       (!transactionFilters.currency || String(tx.currency || '') === transactionFilters.currency) &&
       (!transactionFilters.sender || String(tx.sender_name || '').toLowerCase().includes(transactionFilters.sender.toLowerCase())) &&
@@ -835,7 +860,7 @@ export default function App() {
 
   const transactionFilterOptions = useMemo(() => ({
     types: Array.from(new Set(transactions.map(tx => String(tx.transaction_type || '')).filter(Boolean))).sort(),
-    banks: Array.from(new Set(transactions.map(tx => String(tx.bank_name || '')).filter(Boolean))).sort(),
+    banks: Array.from(new Set(transactions.map(tx => normalizeBankName(tx.bank_name)).filter(Boolean))).sort(),
     statuses: Array.from(new Set(transactions.map(tx => String(tx.processing_status || '')).filter(Boolean))).sort(),
     currencies: Array.from(new Set(transactions.map(tx => String(tx.currency || '')).filter(Boolean))).sort(),
   }), [transactions]);
@@ -844,7 +869,7 @@ export default function App() {
     const summaries = new Map<string, { bank: string; total: number; currency: string; count: number }>();
 
     for (const tx of filteredTransactions) {
-      const bank = tx.bank_name || 'Unknown Bank';
+      const bank = normalizeBankName(tx.bank_name);
       const currency = tx.currency || 'EGP';
       const current = summaries.get(bank) || { bank, total: 0, currency, count: 0 };
       const amount = Number(tx.amount) || 0;
