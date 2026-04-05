@@ -161,19 +161,31 @@ function normalizeReceiverGroupKey(value?: string | null) {
   const normalized = normalizeEntityName(value);
   if (!normalized) return 'unknown-receiver';
 
-  if (
-    normalized.includes('العربية الخليجية') &&
-    (
-      normalized.includes('الزيوت النباتية') ||
-      normalized.includes('تعبئة') ||
-      normalized.includes('تكرير') ||
-      normalized.includes('لعصر')
-    )
-  ) {
+  const stopWords = new Set([
+    'الشركة', 'شركة', 'شركه', 'company', 'co', 'group',
+    'for', 'of', 'and', 'the', 'llc', 'ltd',
+  ]);
+
+  const tokens = normalized
+    .split(' ')
+    .map((token) => token.replace(/^ال/u, ''))
+    .filter((token) => token.length > 1 && !stopWords.has(token));
+
+  const hasGulfArabia =
+    tokens.some((token) => token.includes('عربية') || token.includes('عربيه')) &&
+    tokens.some((token) => token.includes('خليج'));
+  const hasOils =
+    tokens.some((token) => token.includes('زيوت')) ||
+    tokens.some((token) => token.includes('نبات')) ||
+    tokens.some((token) => token.includes('تعب')) ||
+    tokens.some((token) => token.includes('تكرير')) ||
+    tokens.some((token) => token.includes('عصر'));
+
+  if (hasGulfArabia && hasOils) {
     return 'receiver:arabia-gulf-oils';
   }
 
-  return normalized;
+  return Array.from(new Set(tokens)).sort().join(' ') || normalized;
 }
 
 function buildReceiverSummaries(transactions: Transaction[]) {
