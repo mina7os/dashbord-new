@@ -715,6 +715,74 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
     }
   });
 
+  api.patch('/transactions/:recordId', async (req: any, res) => {
+    try {
+      requireRole(req.access, ['manager', 'cfo']);
+
+      const recordId = Number(req.params.recordId);
+      if (!Number.isFinite(recordId)) {
+        return res.status(400).json({ error: 'Invalid transaction record id.' });
+      }
+
+      const allowedFields = [
+        'transaction_date',
+        'transaction_type',
+        'bank_name',
+        'sender_name',
+        'client_name',
+        'beneficiary_name',
+        'beneficiary_account',
+        'amount',
+        'currency',
+        'reference_number',
+      ];
+
+      const updates = Object.fromEntries(
+        Object.entries(req.body?.updates || {}).filter(([key]) => allowedFields.includes(key))
+      );
+
+      if (Object.keys(updates).length === 0) {
+        return res.status(400).json({ error: 'No valid transaction fields were provided.' });
+      }
+
+      const { data: existing, error: existingError } = await supabaseAdmin
+        .from('transactions')
+        .select('*')
+        .eq('record_id', recordId)
+        .single();
+
+      if (existingError || !existing) {
+        return res.status(404).json({ error: 'Transaction not found.' });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from('transactions')
+        .update({ ...updates })
+        .eq('record_id', recordId)
+        .select('*')
+        .single();
+
+      if (error) throw error;
+
+      await logChangeAudit({
+        actor: req.access,
+        action: 'transaction.edit',
+        entityType: 'transactions',
+        entityId: String(recordId),
+        targetUserId: existing.user_id,
+        reason: String(req.body?.comment || '').trim() || undefined,
+        metadata: {
+          before: Object.fromEntries(allowedFields.map((field) => [field, existing[field]])),
+          after: updates,
+        },
+      });
+
+      return res.json({ transaction: data });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to update transaction' });
+    }
+  });
+
   api.get('/review-queue', rateLimit(120, 60000, 'dashboard.review-queue') as any, async (req: any, res) => {
     try {
       if (!req.access.canReview && !req.access.canReadAllData) {

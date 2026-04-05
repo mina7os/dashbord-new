@@ -27,6 +27,99 @@ interface Transaction {
   bank_name?: string;
 }
 
+function TransactionEditModal({
+  item,
+  onClose,
+  onSave,
+}: {
+  item: Transaction;
+  onClose: () => void;
+  onSave: (updates: any, comment?: string) => void;
+}) {
+  const [fields, setFields] = useState<any>({
+    transaction_date: item.transaction_date || '',
+    transaction_type: item.transaction_type || '',
+    bank_name: item.bank_name || '',
+    sender_name: item.sender_name || '',
+    client_name: item.client_name || '',
+    beneficiary_name: item.beneficiary_name || '',
+    beneficiary_account: item.beneficiary_account || '',
+    amount: item.amount ?? '',
+    currency: item.currency || 'EGP',
+    reference_number: item.reference_number || '',
+  });
+  const [comment, setComment] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    setSaving(true);
+    onSave(fields, comment);
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(4px)'
+    }} onClick={onClose}>
+      <div style={{
+        background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: '20px',
+        padding: '2rem', width: '100%', maxWidth: '620px', maxHeight: '82vh', overflowY: 'auto'
+      }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+          <h3 style={{ margin: 0 }}>Edit Transaction</h3>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer' }}>
+            <X size={20} />
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '1.5rem' }}>
+          {['transaction_date', 'transaction_type', 'bank_name', 'sender_name', 'client_name', 'beneficiary_name', 'beneficiary_account', 'amount', 'currency', 'reference_number'].map(key => (
+            <div key={key}>
+              <label style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{key.replace(/_/g, ' ')}</label>
+              <input
+                value={fields[key] ?? ''}
+                onChange={e => setFields((f: any) => ({ ...f, [key]: e.target.value }))}
+                style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 10px', color: 'white', fontSize: '0.85rem', boxSizing: 'border-box' }}
+              />
+            </div>
+          ))}
+        </div>
+
+        <div style={{ marginBottom: '1.5rem' }}>
+          <label style={{ fontSize: '0.7rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Change Comment (Optional)
+          </label>
+          <textarea
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            placeholder="Explain what you changed in this transaction..."
+            rows={3}
+            style={{
+              width: '100%',
+              marginTop: '0.5rem',
+              background: 'var(--surface2)',
+              border: '1px solid var(--border)',
+              borderRadius: '8px',
+              padding: '10px 12px',
+              color: 'white',
+              fontSize: '0.85rem',
+              boxSizing: 'border-box',
+              resize: 'vertical'
+            }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.75rem' }}>
+          <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: '10px', background: 'var(--accent)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontWeight: 600 }}>
+            {saving ? 'Saving...' : 'Save Changes'}
+          </button>
+          <button onClick={onClose} style={{ padding: '10px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'white', cursor: 'pointer' }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 interface ReviewItem {
   id: string;
   created_at: string;
@@ -539,6 +632,7 @@ export default function App() {
   const [page, setPage] = useState(0);
    const [selectedReviewItem, setSelectedReviewItem] = useState<ReviewItem | null>(null);
   const [selectedInspectId, setSelectedInspectId] = useState<string | null>(null);
+  const [selectedTransactionEdit, setSelectedTransactionEdit] = useState<Transaction | null>(null);
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
   const [degradedMode, setDegradedMode] = useState<boolean>(false);
   const [access, setAccess] = useState<AccessState | null>(null);
@@ -945,6 +1039,36 @@ export default function App() {
     }
   }, [session, addToast, loadData]);
 
+  const handleTransactionEdit = useCallback(async (recordId: string | number, updates: any, comment?: string) => {
+    if (!session) return;
+    try {
+      const payload = {
+        updates: {
+          ...updates,
+          amount: updates.amount === '' ? null : Number(updates.amount),
+        },
+        comment,
+      };
+
+      const res = await fetch(`/api/transactions/${recordId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Transaction update failed');
+
+      addToast('Transaction updated successfully.', 'success');
+      setSelectedTransactionEdit(null);
+      void loadData(false);
+    } catch (err: any) {
+      addToast(`Failed: ${err.message}`, 'error');
+    }
+  }, [session, addToast, loadData]);
+
   // â”€â”€â”€ Derived State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const updateTransactionFilter = useCallback((key: keyof TransactionFilters, value: string) => {
     setTransactionFilters(prev => ({ ...prev, [key]: value }));
@@ -1013,6 +1137,7 @@ export default function App() {
   const canSeeReview = !!access?.canReview;
   const canSeeQueue = !!access?.canReview;
   const canSeeIntegrations = access?.role === 'manager';
+  const canEditTransactions = !!access?.canEditAllData;
 
   useEffect(() => {
     if (page > 0 && totalPages > 0 && page >= totalPages) {
@@ -1308,7 +1433,7 @@ export default function App() {
                 <table>
                   <thead>
                     <tr>
-                      <th style={{ width: '130px', whiteSpace: 'nowrap' }}>Date</th><th>Type</th><th>Sender</th><th>Receivers</th><th>Bank / Channel</th><th>Reference</th><th>Amount</th><th>Status</th>
+                      <th style={{ width: '130px', whiteSpace: 'nowrap' }}>Date</th><th>Type</th><th>Sender</th><th>Receivers</th><th>Bank / Channel</th><th>Reference</th><th>Amount</th><th>Status</th>{canEditTransactions && <th>Action</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -1334,6 +1459,16 @@ export default function App() {
                           {tx.amount?.toLocaleString()} {tx.currency}
                         </td>
                         <td>{statusBadge(tx.processing_status)}</td>
+                        {canEditTransactions && (
+                          <td>
+                            <button
+                              onClick={() => setSelectedTransactionEdit(tx)}
+                              style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '4px 8px', color: 'var(--accent)', cursor: 'pointer', fontSize: '0.75rem' }}
+                            >
+                              Edit
+                            </button>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -1510,6 +1645,14 @@ export default function App() {
           onClose={() => setSelectedReviewItem(null)}
           requireComment={!!access?.mustProvideChangeReason}
           onAction={(action, corrected, comment) => handleReviewAction(selectedReviewItem.id, action, corrected, comment)}
+        />
+      )}
+
+      {selectedTransactionEdit && (
+        <TransactionEditModal
+          item={selectedTransactionEdit}
+          onClose={() => setSelectedTransactionEdit(null)}
+          onSave={(updates, comment) => handleTransactionEdit(selectedTransactionEdit.record_id || selectedTransactionEdit.id || '', updates, comment)}
         />
       )}
 
