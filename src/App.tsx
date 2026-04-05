@@ -33,6 +33,8 @@ interface ReviewItem {
   raw_text: string;
   review_status: string;
   suggested_data: any;
+  reason?: string;
+  confidence?: number;
 }
 
 interface QueueItem {
@@ -933,12 +935,15 @@ export default function App() {
         action === 'reject' ? 'info' : 'success'
       );
       setSelectedReviewItem(null);
-      // Realtime will auto-refresh; also do immediate optimistic update
       setReviewQueue(prev => prev.filter(i => i.id !== itemId));
+      if (action === 'approve' || action === 'edit') {
+        setTab('transactions');
+      }
+      void loadData(false);
     } catch (err: any) {
       addToast(`Failed: ${err.message}`, 'error');
     }
-  }, [session, addToast]);
+  }, [session, addToast, loadData]);
 
   // â”€â”€â”€ Derived State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const updateTransactionFilter = useCallback((key: keyof TransactionFilters, value: string) => {
@@ -1412,13 +1417,29 @@ export default function App() {
                     </div>
                   </div>
                 </div>
-                <button
-                  onClick={() => setSelectedReviewItem(item)}
-                  className="tab active"
-                  style={{ padding: '6px 14px', fontSize: '0.8rem', marginTop: '0.5rem' }}
-                >
-                  {'Review ->'}
-                </button>
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.75rem', flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => handleReviewAction(item.id, 'approve')}
+                    className="tab active"
+                    style={{ padding: '6px 12px', fontSize: '0.8rem', background: 'rgba(34,197,94,0.15)', borderColor: 'rgba(34,197,94,0.35)', color: '#22c55e' }}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    onClick={() => setSelectedReviewItem(item)}
+                    className="tab"
+                    style={{ padding: '6px 12px', fontSize: '0.8rem' }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleReviewAction(item.id, 'reject')}
+                    className="tab"
+                    style={{ padding: '6px 12px', fontSize: '0.8rem', background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.3)', color: '#ef4444' }}
+                  >
+                    Reject
+                  </button>
+                </div>
               </div>
             ))}
           </div>
