@@ -8,10 +8,20 @@ import { supabaseAdmin } from '../lib/supabase-server.ts';
 import { ExtractedTransaction } from './extraction.ts';
 import { PipelineContext } from '../types/pipeline';
 
+function normalizeReferenceNumber(reference?: string | null): string {
+  return String(reference || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .trim();
+}
+
 /**
  * Checks if a transaction with the same reference number already exists for this user.
  */
 export async function checkDuplicateTransactionByReference(userId: string, reference: string): Promise<boolean> {
+  const normalizedReference = normalizeReferenceNumber(reference);
+  if (!normalizedReference) return false;
+
   const { data, error } = await supabaseAdmin
     .from('transactions')
     .select('record_id')
@@ -19,8 +29,20 @@ export async function checkDuplicateTransactionByReference(userId: string, refer
     .eq('reference_number', reference)
     .maybeSingle();
   
-  if (error) return false;
-  return !!data;
+  if (!error && data) return true;
+
+  const { data: candidates, error: candidateError } = await supabaseAdmin
+    .from('transactions')
+    .select('record_id, reference_number')
+    .eq('user_id', userId)
+    .not('reference_number', 'is', null)
+    .limit(5000);
+
+  if (candidateError) return false;
+
+  return Boolean(
+    candidates?.some((row: any) => normalizeReferenceNumber(row.reference_number) === normalizedReference)
+  );
 }
 
 export interface SavedTransactionResult {
@@ -52,7 +74,7 @@ async function pause(ms: number) {
  */
 export async function saveTransactionToOutputs(tx: ExtractedTransaction, context: PipelineContext): Promise<SavedTransactionResult> {
   // 1. Generate Idempotency Key (normalized)
-  const normalizedRef = (tx.reference_number || tx.transaction_date || 'noref').toLowerCase().trim();
+  const normalizedRef = normalizeReferenceNumber(tx.reference_number) || (tx.transaction_date || 'noref').toLowerCase().trim();
   const idKey = `tx:${context.userId}:${tx.amount}:${normalizedRef}`;
 
   // 2. Save to Supabase (Source of Truth)
