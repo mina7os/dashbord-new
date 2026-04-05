@@ -441,6 +441,8 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 
       if (req.access.role === 'cfo') {
         const managerEmail = (process.env.MANAGER_EMAIL || 'minahossam500@gmail.com').trim().toLowerCase();
+        let managerUserId: string | null = null;
+
         const { data: managerRoleRow } = await supabaseAdmin
           .from('user_roles')
           .select('user_id, email')
@@ -448,10 +450,24 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
           .maybeSingle();
 
         if (managerRoleRow?.user_id) {
+          managerUserId = managerRoleRow.user_id;
+        } else {
+          const { data: authUsers, error: authUsersError } = await supabaseAdmin.auth.admin.listUsers();
+          if (!authUsersError) {
+            const managerAuthUser = (authUsers?.users || []).find((candidate: any) =>
+              String(candidate.email || '').trim().toLowerCase() === managerEmail
+            );
+            if (managerAuthUser?.id) {
+              managerUserId = managerAuthUser.id;
+            }
+          }
+        }
+
+        if (managerUserId) {
           const { data: managerIntegration } = await supabaseAdmin
             .from('user_integrations')
             .select('sheet_id, folder_id')
-            .eq('user_id', managerRoleRow.user_id)
+            .eq('user_id', managerUserId)
             .maybeSingle();
 
           if (managerIntegration?.sheet_id && managerIntegration.sheet_id !== '1mock_sheet_id') {
