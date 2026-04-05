@@ -24,8 +24,6 @@ const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_I
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
 const WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS = Number(process.env.WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS || 1800);
 const WA_MESSAGE_DEDUPE_TTL_MS = Number(process.env.WA_MESSAGE_DEDUPE_TTL_MS || 10 * 60 * 1000);
-const WWEBJS_WEB_VERSION = String(process.env.WWEBJS_WEB_VERSION || '').trim();
-const WWEBJS_REMOTE_HTML = String(process.env.WWEBJS_REMOTE_HTML || '').trim();
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
@@ -180,27 +178,6 @@ async function getActiveChatConfig(userId: string, chatId: string) {
     .eq('is_active', true)
     .maybeSingle();
   return data;
-}
-
-async function updateWhatsAppSessionMetadata(userId: string, patch: Record<string, unknown>) {
-  const { data: existing } = await supabaseAdmin
-    .from('user_integrations')
-    .select('whatsapp_session')
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  const nextSession = {
-    ...(existing?.whatsapp_session || {}),
-    ...patch,
-  };
-
-  await supabaseAdmin
-    .from('user_integrations')
-    .upsert({
-      user_id: userId,
-      whatsapp_session: nextSession,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id' });
 }
 
 async function getLightweightChats(client: WhatsAppClient): Promise<Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }>> {
@@ -415,61 +392,30 @@ export class WhatsAppManager {
 
     const failures = (this.failureCounts.get(userId) || 0) + 1;
     this.failureCounts.set(userId, failures);
-    const shouldHardResetSession =
-      reason.includes("Stuck in 'loading'") ||
-      reason.includes('Protocol error (Runtime.callFunctionOn): Target closed');
-    const shouldStopOnQrExpiry =
-      reason.includes('Max qrcode retries reached');
 
     if (reason.includes('Auth Failure')) {
       await this.executeHardWipe(userId);
       this.failureCounts.delete(userId);
-      await updateWhatsAppSessionMetadata(userId, {
-        auto_restore: false,
-        status: 'auth_failed',
-        last_error: reason,
-        last_updated_at: new Date().toISOString(),
-      });
       this.clearRuntimeState(userId, `Authentication failed. Please re-link your device.`);
-    } else if (shouldStopOnQrExpiry) {
-      await updateWhatsAppSessionMetadata(userId, {
-        auto_restore: false,
-        status: 'qr_expired',
-        last_error: reason,
-        last_updated_at: new Date().toISOString(),
-      });
-      this.clearRuntimeState(userId, 'QR expired. Please reconnect and scan the newest QR code.');
     } else if (failures <= 2) {
-      if (shouldHardResetSession) {
-        await this.executeHardWipe(userId);
-      }
       await this.cleanChromiumLocks(userId);
       this.clearRuntimeState(userId, `Recovering connection: ${reason}. Retrying...`);
-      this.scheduleReconnect(userId, shouldHardResetSession);
+      this.scheduleReconnect(userId);
     } else {
       this.emitState(userId, 'failed', { status: 'failed', reason: `Failed to connect after ${failures} tries.` });
       this.clearRuntimeState(userId, `Failed to connect after ${failures} tries. Please manually reconnect.`, false);
     }
   }
 
-  private scheduleReconnect(userId: string, freshSession: boolean = false) {
+  private scheduleReconnect(userId: string) {
     this.emitState(userId, 'reconnecting', { status: 'reconnecting' });
-    setTimeout(() => this.startInstance(userId, freshSession ? { freshSession: true } : undefined), 3000);
+    setTimeout(() => this.startInstance(userId), 3000);
   }
 
   async restoreExistingSessions(): Promise<void> {
     const authDir = path.join(process.cwd(), '.wwebjs_auth');
     if (!fs.existsSync(authDir)) return;
     try {
-      const { data: integrationRows } = await supabaseAdmin
-        .from('user_integrations')
-        .select('user_id, whatsapp_session');
-      const restorableUsers = new Set(
-        (integrationRows || [])
-          .filter((row: any) => Boolean(row?.whatsapp_session?.auto_restore))
-          .map((row: any) => String(row.user_id))
-      );
-
       const restoredUserIds = new Set<string>();
       const dirs = fs.readdirSync(authDir);
       for (const d of dirs) {
@@ -477,11 +423,10 @@ export class WhatsAppManager {
         if (d.startsWith('session-user-')) userId = d.replace('session-user-', '');
         else if (d.startsWith('session-')) userId = d.replace('session-', '');
 
-        if (userId && restorableUsers.has(userId) && !restoredUserIds.has(userId)) {
+        if (userId && !restoredUserIds.has(userId)) {
           console.log(`[WhatsApp] Auto-restoring session for user: ${userId}`);
           restoredUserIds.add(userId);
-          await this.startInstance(userId).catch(() => {});
-          await sleep(4000);
+          this.startInstance(userId).catch(() => {});
         }
       }
     } catch {}
@@ -533,7 +478,7 @@ export class WhatsAppManager {
   }
 
   private createClient(userId: string): WhatsAppClient {
-    const clientOptions: any = {
+    return new Client({
       authStrategy: new LocalAuth({ clientId: `user-${userId}` }),
       puppeteer: {
         headless: true,
@@ -548,18 +493,12 @@ export class WhatsAppManager {
       authTimeoutMs: WA_AUTH_TIMEOUT_MS,
       takeoverTimeoutMs: WA_TAKEOVER_TIMEOUT_MS,
       qrMaxRetries: WA_QR_MAX_RETRIES,
-    };
-
-    // Fresh QR sessions are more reliable when we do not force an outdated WA Web version.
-    // Keep explicit pinning only when operators configure it intentionally.
-    if (WWEBJS_WEB_VERSION && WWEBJS_REMOTE_HTML) {
-      clientOptions.webVersionCache = {
+      webVersionCache: {
         type: 'remote',
-        remotePath: WWEBJS_REMOTE_HTML.replace('{version}', WWEBJS_WEB_VERSION),
-      };
-    }
-
-    return new Client(clientOptions);
+        remotePath: (process.env.WWEBJS_REMOTE_HTML || 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html')
+          .replace('{version}', process.env.WWEBJS_WEB_VERSION || '2.2412.54')
+      }
+    });
   }
 
   private bindClientEvents(userId: string, client: WhatsAppClient, currentGen: number) {
@@ -626,13 +565,6 @@ export class WhatsAppManager {
     this.activeClients.set(userId, client);
     
     this.emitState(userId, 'ready', { status: 'ready' });
-    updateWhatsAppSessionMetadata(userId, {
-      auto_restore: true,
-      status: 'ready',
-      last_ready_at: new Date().toISOString(),
-      last_error: null,
-      last_updated_at: new Date().toISOString(),
-    }).catch(() => {});
     messageProcessor.start(userId);
     this.startActiveChatSync(userId, client);
   }
@@ -772,24 +704,15 @@ export class WhatsAppManager {
     if (cached && cached.length > 0) return cached;
 
     const client = this.getReadyClient(userId);
-    const state = this.getStatus(userId);
     let lastMapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
-
-    if (state.status === 'ready' && state.lastUpdatedAt) {
-      const readyForMs = Date.now() - new Date(state.lastUpdatedAt).getTime();
-      if (readyForMs < 15000) {
-        await sleep(12000 - Math.max(0, readyForMs - 3000));
-      }
-    }
 
     for (let attempt = 1; attempt <= WA_DISCOVERY_MAX_ATTEMPTS; attempt++) {
       let mapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
-      const attemptTimeoutMs = WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 10000);
 
       try {
         mapped = await withTimeout(
           getLightweightChats(client),
-          attemptTimeoutMs,
+          8000,
           'Lightweight chat discovery timed out.'
         );
         console.log(`[WhatsApp | ${userId}] Lightweight chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
@@ -801,33 +724,12 @@ export class WhatsAppManager {
         try {
           mapped = await withTimeout(
             getLightweightContacts(client),
-            attemptTimeoutMs,
+            8000,
             'Contact discovery fallback timed out. Please try again in a few seconds.'
           );
           console.log(`[WhatsApp | ${userId}] Contact fallback returned ${mapped.length} contacts on attempt ${attempt}.`);
         } catch (contactError: any) {
           console.warn(`[WhatsApp | ${userId}] Contact fallback failed on attempt ${attempt}:`, contactError?.message || contactError);
-        }
-      }
-
-      if (mapped.length === 0) {
-        try {
-          const hydratedChats = await withTimeout(
-            client.getChats(),
-            attemptTimeoutMs,
-            'Hydrated WhatsApp chat discovery timed out.'
-          );
-          mapped = (hydratedChats || [])
-            .map((chat: any) => ({
-              id: chat?.id?._serialized || '',
-              name: chat?.name || chat?.formattedTitle || chat?.id?._serialized || 'Unknown Chat',
-              isGroup: Boolean(chat?.isGroup),
-              unreadCount: Number(chat?.unreadCount || 0),
-            }))
-            .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
-          console.log(`[WhatsApp | ${userId}] Hydrated chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
-        } catch (hydratedError: any) {
-          console.warn(`[WhatsApp | ${userId}] Hydrated chat discovery failed on attempt ${attempt}:`, hydratedError?.message || hydratedError);
         }
       }
 
@@ -939,15 +841,7 @@ export class WhatsAppManager {
     messageProcessor.stop(userId);
     this.startupLocks.delete(userId);
     this.clearRuntimeState(userId, undefined);
-    if (wipeSession) {
-      await this.executeHardWipe(userId);
-      await updateWhatsAppSessionMetadata(userId, {
-        auto_restore: false,
-        status: 'disconnected',
-        last_error: null,
-        last_updated_at: new Date().toISOString(),
-      });
-    }
+    if (wipeSession) await this.executeHardWipe(userId);
   }
 
   async resetInstance(userId: string): Promise<void> {
