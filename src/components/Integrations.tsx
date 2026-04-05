@@ -26,7 +26,7 @@ export default function Integrations(props: Props) {
     googleConnected, sheetUrl, whatsappStatus, whatsappStatusPayload, qrCode,
     onConnectWhatsApp, onDisconnectWhatsApp
   } = props;
-  const isManager = role === 'manager';
+  const canManageIntegrations = role === 'manager' || role === 'cfo';
 
   type ChatMessage = {
     id: string;
@@ -53,14 +53,14 @@ export default function Integrations(props: Props) {
   const [backfillLoading, setBackfillLoading] = useState(false);
 
   useEffect(() => {
-    if (!isManager) return;
+    if (!canManageIntegrations) return;
     // Sync monitored chats on mount
     const loadMonitored = async () => {
       const { data: chats } = await supabase.from('whatsapp_connected_chats').select('chat_id').eq('user_id', user.id).eq('is_active', true);
       if (chats) setMonitoredChatIds(chats.map((c: any) => c.chat_id));
     };
     loadMonitored();
-  }, [isManager, user.id]);
+  }, [canManageIntegrations, user.id]);
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` };
 
@@ -285,7 +285,7 @@ export default function Integrations(props: Props) {
                 </button>
               </div>
             )}
-            {isManager && (
+            {canManageIntegrations && (
               <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem' }}>
                 <button
                   onClick={setupDatabase} disabled={settingUp}
@@ -308,9 +308,9 @@ export default function Integrations(props: Props) {
         ) : (
           <div style={{ textAlign: 'center', padding: '1rem' }}>
             <p style={{ fontSize: '0.9rem', marginBottom: '1rem', color: 'var(--muted)' }}>
-              {isManager ? 'Connect your Google account to create your transaction database.' : 'Google Sheet access is managed by the manager account.'}
+              {canManageIntegrations ? 'Connect your Google account to create your transaction database.' : 'Google Sheet access is managed by the manager account.'}
             </p>
-            {isManager && (
+            {canManageIntegrations && (
               <button onClick={onConnectGoogle} className="badge badge-pending"
                 style={{ padding: '10px 20px', cursor: 'pointer', border: 'none' }}>
                 Connect Google Account
@@ -361,13 +361,13 @@ export default function Integrations(props: Props) {
           </div>
         </div>
 
-        {!isManager && (
+        {!canManageIntegrations && (
           <div style={{ color: 'var(--muted)', fontSize: '0.9rem', lineHeight: 1.6 }}>
             WhatsApp controls are manager-only. Other roles work from dashboard data and their assigned Google Sheets.
           </div>
         )}
 
-        {isManager && whatsappStatus === 'disconnected' && (
+        {canManageIntegrations && whatsappStatus === 'disconnected' && (
           <div className="whatsapp-disconnected z-in">
             <p style={{ color: 'var(--text)', marginBottom: '1.5rem', opacity: 0.8 }}>
               Authorize our system to ingest data from your WhatsApp chats.
@@ -379,7 +379,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {isManager && whatsappStatus === 'ready' && (
+        {canManageIntegrations && whatsappStatus === 'ready' && (
           <div className="whatsapp-connected z-in">
             <div className="flex items-center space-x-4 mb-4">
               <div className="status-indicator">
@@ -434,7 +434,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {isManager && whatsappStatus === 'qr' && qrCode && (
+        {canManageIntegrations && whatsappStatus === 'qr' && qrCode && (
           <div style={{ textAlign: 'center' }}>
             <div style={{ padding: '0.75rem', background: 'rgba(255,193,7,0.1)', borderRadius: '12px', marginBottom: '1rem', border: '1px solid rgba(255,193,7,0.2)' }}>
               <p style={{ fontSize: '0.8rem', color: 'var(--yellow)', margin: 0 }}>
@@ -451,7 +451,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {isManager && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning') && (
+        {canManageIntegrations && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning') && (
           <div style={{ textAlign: 'center', padding: '2rem', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', border: '1px solid var(--border)' }}>
             <RefreshCw size={32} className="spinner" color="var(--primary)" />
             <p style={{ marginTop: '1.25rem', fontWeight: 500, color: 'white' }}>
@@ -473,7 +473,7 @@ export default function Integrations(props: Props) {
         )}
 
         {/* Chat Selector Modal Overlay */}
-        {isManager && showSelector && (
+        {canManageIntegrations && showSelector && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             background: 'var(--surface)', zIndex: 10, borderRadius: '16px',
@@ -526,7 +526,7 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {isManager && showInbox && (
+        {canManageIntegrations && showInbox && (
           <div style={{
             position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
             background: 'var(--surface)', zIndex: 11, borderRadius: '16px',

@@ -1295,7 +1295,7 @@ export default function App() {
   const totalPages = Math.ceil(filteredTransactions.length / ITEMS_PER_PAGE);
   const canSeeReview = !!access?.canReview;
   const canSeeQueue = !!access?.canReview;
-  const canSeeIntegrations = access?.role === 'manager';
+  const canSeeIntegrations = !!access?.canUseIntegrations;
   const canEditTransactions = !!access?.canEditAllData;
 
   const openPendingItems = useCallback(() => {

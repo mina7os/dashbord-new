@@ -73,8 +73,8 @@ function buildAccessContext(userId: string, email: string, role: AppRole): Acces
     canEditAllData: role === 'manager' || role === 'cfo',
     canEditOwnData: role === 'manager' || role === 'cfo' || role === 'admin',
     canReview: role === 'manager' || role === 'cfo' || role === 'admin',
-    canUseIntegrations: role === 'manager',
-    canManageSystem: role === 'manager',
+    canUseIntegrations: role === 'manager' || role === 'cfo',
+    canManageSystem: role === 'manager' || role === 'cfo',
     mustProvideChangeReason: role === 'admin',
   };
 }

@@ -380,7 +380,7 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 
   api.post('/integrations/reset', async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -401,7 +401,7 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 
   api.post('/integrations/google-tokens', async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -425,7 +425,7 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 
   api.post('/integrations/setup-database', async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -449,7 +449,7 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
 function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
   api.get('/whatsapp/chats', rateLimit(20, 60000, 'whatsapp.chats') as any, async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -463,7 +463,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.get('/whatsapp/status', rateLimit(60, 60000, 'whatsapp.status') as any, (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -473,7 +473,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.get('/whatsapp/messages', rateLimit(60, 60000, 'whatsapp.messages.get') as any, async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -487,7 +487,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.post('/whatsapp/connect', rateLimit(5, 60000, 'whatsapp.connect') as any, async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -501,7 +501,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.post('/whatsapp/disconnect', async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -515,7 +515,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.post('/whatsapp/messages', rateLimit(30, 60000, 'whatsapp.messages.post') as any, async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
@@ -529,7 +529,7 @@ function registerWhatsAppRoutes(api: express.Router, deps: ServerDependencies) {
 
   api.post('/whatsapp/backfill', rateLimit(10, 60000, 'whatsapp.backfill') as any, async (req: any, res) => {
     try {
-      requireRole(req.access, ['manager']);
+      requireRole(req.access, ['manager', 'cfo']);
     } catch (err: any) {
       return res.status(403).json({ error: err.message });
     }
