@@ -438,6 +438,42 @@ function registerIntegrationRoutes(api: express.Router, deps: ServerDependencies
       if (!existing?.google_tokens) {
         return res.status(400).json({ error: 'Google tokens not found. Please connect your account first.' });
       }
+
+      if (req.access.role === 'cfo') {
+        const managerEmail = (process.env.MANAGER_EMAIL || 'minahossam500@gmail.com').trim().toLowerCase();
+        const { data: managerRoleRow } = await supabaseAdmin
+          .from('user_roles')
+          .select('user_id, email')
+          .eq('email', managerEmail)
+          .maybeSingle();
+
+        if (managerRoleRow?.user_id) {
+          const { data: managerIntegration } = await supabaseAdmin
+            .from('user_integrations')
+            .select('sheet_id, folder_id')
+            .eq('user_id', managerRoleRow.user_id)
+            .maybeSingle();
+
+          if (managerIntegration?.sheet_id && managerIntegration.sheet_id !== '1mock_sheet_id') {
+            await supabaseAdmin
+              .from('user_integrations')
+              .upsert({
+                user_id: userId,
+                google_tokens: existing.google_tokens,
+                folder_id: managerIntegration.folder_id || null,
+                sheet_id: managerIntegration.sheet_id,
+                updated_at: new Date().toISOString(),
+              }, { onConflict: 'user_id' });
+
+            return res.json({
+              status: 'success',
+              data: { folderId: managerIntegration.folder_id || null, sheetId: managerIntegration.sheet_id },
+              message: 'Connected to the shared manager spreadsheet.',
+            });
+          }
+        }
+      }
+
       const result = await setupUserDatabase(userId, existing.google_tokens);
       res.json({ status: "success", data: result });
     } catch (err: any) {
