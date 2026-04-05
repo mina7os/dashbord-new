@@ -79,7 +79,7 @@ function TransactionEditModal({
               <input
                 value={fields[key] ?? ''}
                 onChange={e => setFields((f: any) => ({ ...f, [key]: e.target.value }))}
-                style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 10px', color: 'white', fontSize: '0.85rem', boxSizing: 'border-box' }}
+                style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 10px', color: 'var(--text)', fontSize: '0.85rem', boxSizing: 'border-box' }}
               />
             </div>
           ))}
@@ -101,7 +101,7 @@ function TransactionEditModal({
               border: '1px solid var(--border)',
               borderRadius: '8px',
               padding: '10px 12px',
-              color: 'white',
+              color: 'var(--text)',
               fontSize: '0.85rem',
               boxSizing: 'border-box',
               resize: 'vertical'
@@ -113,7 +113,7 @@ function TransactionEditModal({
           <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: '10px', background: 'var(--accent)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontWeight: 600 }}>
             {saving ? 'Saving...' : 'Save Changes'}
           </button>
-          <button onClick={onClose} style={{ padding: '10px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'white', cursor: 'pointer' }}>Cancel</button>
+          <button onClick={onClose} style={{ padding: '10px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text)', cursor: 'pointer' }}>Cancel</button>
         </div>
       </div>
     </div>
@@ -429,7 +429,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
         </div>
 
         <div style={{ background: 'var(--surface2)', borderRadius: '10px', padding: '1rem', marginBottom: '1.5rem', fontSize: '0.85rem', color: 'var(--muted)', lineHeight: 1.6 }}>
-          <strong style={{ color: 'white' }}>Raw Message:</strong><br />
+          <strong style={{ color: 'var(--text)' }}>Raw Message:</strong><br />
           {item.raw_text || 'No raw text available'}
         </div>
 
@@ -441,7 +441,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
                 <input
                   value={fields[key] || ''}
                   onChange={e => setFields((f: any) => ({ ...f, [key]: e.target.value }))}
-                  style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 10px', color: 'white', fontSize: '0.85rem', boxSizing: 'border-box' }}
+                  style={{ width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '6px', padding: '6px 10px', color: 'var(--text)', fontSize: '0.85rem', boxSizing: 'border-box' }}
                 />
               </div>
             ))}
@@ -451,7 +451,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
             {Object.entries(item.suggested_data || {}).filter(([k]) => !['user_id', 'duplicate', 'processing_status', 'source_document_type', 'raw_text'].includes(k)).map(([k, v]) => (
               <div key={k} style={{ background: 'var(--surface2)', padding: '8px 12px', borderRadius: '8px' }}>
                 <div style={{ fontSize: '0.65rem', color: 'var(--muted)', textTransform: 'uppercase' }}>{k.replace(/_/g, ' ')}</div>
-                <div style={{ color: 'white', fontSize: '0.85rem', fontWeight: 500 }}>{String(v ?? '-')}</div>
+                <div style={{ color: 'var(--text)', fontSize: '0.85rem', fontWeight: 500 }}>{String(v ?? '-')}</div>
               </div>
             ))}
           </div>
@@ -473,7 +473,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
               border: `1px solid ${requireComment && !comment.trim() ? 'rgba(239,68,68,0.4)' : 'var(--border)'}`,
               borderRadius: '8px',
               padding: '10px 12px',
-              color: 'white',
+              color: 'var(--text)',
               fontSize: '0.85rem',
               boxSizing: 'border-box',
               resize: 'vertical'
@@ -487,7 +487,7 @@ function ReviewModal({ item, token, onClose, onAction, requireComment = false }:
               <button onClick={() => handleSave('edit')} disabled={saving} style={{ flex: 1, padding: '10px', background: 'var(--accent)', border: 'none', borderRadius: '8px', color: 'white', cursor: 'pointer', fontWeight: 600 }}>
                 {saving ? 'Saving...' : 'Save & Approve'}
               </button>
-              <button onClick={() => setEditMode(false)} style={{ padding: '10px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'white', cursor: 'pointer' }}>Cancel</button>
+              <button onClick={() => setEditMode(false)} style={{ padding: '10px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', color: 'var(--text)', cursor: 'pointer' }}>Cancel</button>
             </>
           ) : (
             <>
@@ -1479,12 +1479,12 @@ export default function App() {
             {totalPages > 1 && (
               <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '1rem', marginTop: '1rem' }}>
                 <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0}
-                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', color: page === 0 ? 'var(--muted)' : 'white', cursor: page === 0 ? 'default' : 'pointer' }}>
+                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', color: page === 0 ? 'var(--muted)' : 'var(--text)', cursor: page === 0 ? 'default' : 'pointer' }}>
                   <ChevronLeft size={16} />
                 </button>
                 <span style={{ color: 'var(--muted)', fontSize: '0.85rem' }}>Page {page + 1} of {totalPages}</span>
                 <button onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} disabled={page >= totalPages - 1}
-                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', color: page >= totalPages - 1 ? 'var(--muted)' : 'white', cursor: page >= totalPages - 1 ? 'default' : 'pointer' }}>
+                  style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: '8px', padding: '6px 12px', color: page >= totalPages - 1 ? 'var(--muted)' : 'var(--text)', cursor: page >= totalPages - 1 ? 'default' : 'pointer' }}>
                   <ChevronRight size={16} />
                 </button>
               </div>
@@ -1539,7 +1539,7 @@ export default function App() {
                   <div className="q-msg">{item.raw_text || '(no raw text)'}</div>
                   {item.suggested_data?.amount && (
                     <div style={{ marginTop: '0.5rem', fontSize: '0.8rem', color: 'var(--muted)' }}>
-                      Suggested: <strong style={{ color: 'white' }}>{item.suggested_data.amount} {item.suggested_data.currency || 'EGP'}</strong>
+                      Suggested: <strong style={{ color: 'var(--text)' }}>{item.suggested_data.amount} {item.suggested_data.currency || 'EGP'}</strong>
                       {item.suggested_data.sender_name && <> | {item.suggested_data.sender_name}</>}
                     </div>
                   )}
