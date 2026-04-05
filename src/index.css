@@ -110,6 +110,20 @@ body {
 .table-wrap td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--border); color: var(--text); }
 .table-wrap tr:last-child td { border-bottom: none; }
 .table-wrap tr:hover td { background: var(--surface2); }
+.transactions-table { table-layout: fixed; }
+.transactions-table th,
+.transactions-table td { vertical-align: top; }
+.transactions-table td:nth-child(3) div,
+.transactions-table td:nth-child(4) div,
+.transactions-table td:nth-child(5) div,
+.transactions-table td:nth-child(6) div {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.transactions-table td:nth-child(8) .badge-pill {
+  white-space: nowrap;
+}
 
 /* Badges */
 .badge-pill { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 99px; font-size: 0.7rem; font-weight: 600; }

@@ -166,6 +166,13 @@ function duplicateDetailLines(item: QueueItem): string[] {
   return lines;
 }
 
+const tableCellClampStyle = {
+  display: 'block',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap' as const,
+};
+
 function getTransactionRowKey(tx: Transaction) {
   return String(tx.record_id ?? tx.id ?? tx.reference_number ?? tx.created_at);
 }
@@ -1666,19 +1673,19 @@ export default function App() {
               {paginatedTransactions.length === 0 ? (
                 <div className="empty">{search ? 'No transactions match your search.' : 'No transactions yet. Connect WhatsApp to start ingesting data.'}</div>
               ) : (
-                <table>
+                <table className="transactions-table">
                   <thead>
                     <tr>
-                      <th style={{ width: '130px', whiteSpace: 'nowrap' }}>Date</th><th>Type</th><th>Sender</th><th>Receivers</th><th>Bank / Channel</th><th>Reference</th><th>Amount</th><th>Status</th>{canEditTransactions && <th>Action</th>}
+                      <th style={{ width: '120px', whiteSpace: 'nowrap' }}>Date</th><th style={{ width: '90px' }}>Type</th><th style={{ width: '190px' }}>Sender</th><th style={{ width: '220px' }}>Receivers</th><th style={{ width: '170px' }}>Bank / Channel</th><th style={{ width: '150px' }}>Reference</th><th style={{ width: '130px', whiteSpace: 'nowrap' }}>Amount</th><th style={{ width: '120px' }}>Status</th>{canEditTransactions && <th style={{ width: '140px' }}>Action</th>}
                     </tr>
                   </thead>
                   <tbody>
                     {paginatedTransactions.map(tx => (
                       <tr key={getTransactionRowKey(tx)}>
-                        <td style={{ color: 'var(--muted)', fontSize: '0.75rem', whiteSpace: 'nowrap', minWidth: '130px' }}>{tx.transaction_date || tx.created_at.split('T')[0]}</td>
+                        <td style={{ color: 'var(--muted)', fontSize: '0.75rem', whiteSpace: 'nowrap', minWidth: '120px' }}>{tx.transaction_date || tx.created_at.split('T')[0]}</td>
                         <td>{typeBadge(tx.transaction_type)}</td>
                         <td>
-                          <div style={{ fontWeight: 600 }}>{tx.sender_name || 'Unknown'}</div>
+                          <div style={{ ...tableCellClampStyle, fontWeight: 600 }} title={tx.sender_name || 'Unknown'}>{tx.sender_name || 'Unknown'}</div>
                         </td>
                         <td>
                           <div style={{ fontWeight: 600 }}>{tx.beneficiary_name || '—'}</div>
