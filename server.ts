@@ -204,9 +204,11 @@ async function startServer() {
   if (degradedMode) {
     console.warn('[Startup] Skipping WhatsApp auto-restore due to degraded mode.');
   } else {
-    await whatsapp.restoreExistingSessions().catch(err => {
-      console.error('[Startup] Auto-restore session failed:', err.message);
-    });
+    setTimeout(() => {
+      whatsapp.restoreExistingSessions().catch(err => {
+        console.error('[Startup] Auto-restore session failed:', err.message);
+      });
+    }, 0);
   }
 
   io.on("connection", (socket) => {
