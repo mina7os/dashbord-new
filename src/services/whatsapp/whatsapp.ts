@@ -182,27 +182,6 @@ async function getActiveChatConfig(userId: string, chatId: string) {
   return data;
 }
 
-async function updateWhatsAppSessionMetadata(userId: string, patch: Record<string, unknown>) {
-  const { data: existing } = await supabaseAdmin
-    .from('user_integrations')
-    .select('whatsapp_session')
-    .eq('user_id', userId)
-    .maybeSingle();
-
-  const nextSession = {
-    ...(existing?.whatsapp_session || {}),
-    ...patch,
-  };
-
-  await supabaseAdmin
-    .from('user_integrations')
-    .upsert({
-      user_id: userId,
-      whatsapp_session: nextSession,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id' });
-}
-
 async function getLightweightChats(client: WhatsAppClient): Promise<Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }>> {
   return client.pupPage.evaluate(() => {
     try {
@@ -439,15 +418,6 @@ export class WhatsAppManager {
     const authDir = path.join(process.cwd(), '.wwebjs_auth');
     if (!fs.existsSync(authDir)) return;
     try {
-      const { data: integrationRows } = await supabaseAdmin
-        .from('user_integrations')
-        .select('user_id, whatsapp_session');
-      const restorableUsers = new Set(
-        (integrationRows || [])
-          .filter((row: any) => Boolean(row?.whatsapp_session?.auto_restore))
-          .map((row: any) => String(row.user_id))
-      );
-
       const restoredUserIds = new Set<string>();
       const dirs = fs.readdirSync(authDir);
       for (const d of dirs) {
@@ -455,7 +425,7 @@ export class WhatsAppManager {
         if (d.startsWith('session-user-')) userId = d.replace('session-user-', '');
         else if (d.startsWith('session-')) userId = d.replace('session-', '');
 
-        if (userId && restorableUsers.has(userId) && !restoredUserIds.has(userId)) {
+        if (userId && !restoredUserIds.has(userId)) {
           console.log(`[WhatsApp] Auto-restoring session for user: ${userId}`);
           restoredUserIds.add(userId);
           this.startInstance(userId).catch(() => {});
@@ -602,13 +572,6 @@ export class WhatsAppManager {
     this.activeClients.set(userId, client);
     
     this.emitState(userId, 'ready', { status: 'ready' });
-    updateWhatsAppSessionMetadata(userId, {
-      auto_restore: true,
-      status: 'ready',
-      last_ready_at: new Date().toISOString(),
-      last_error: null,
-      last_updated_at: new Date().toISOString(),
-    }).catch(() => {});
     messageProcessor.start(userId);
     this.startActiveChatSync(userId, client);
   }
@@ -907,15 +870,7 @@ export class WhatsAppManager {
     messageProcessor.stop(userId);
     this.startupLocks.delete(userId);
     this.clearRuntimeState(userId, undefined);
-    if (wipeSession) {
-      await this.executeHardWipe(userId);
-      await updateWhatsAppSessionMetadata(userId, {
-        auto_restore: false,
-        status: 'disconnected',
-        last_error: null,
-        last_updated_at: new Date().toISOString(),
-      });
-    }
+    if (wipeSession) await this.executeHardWipe(userId);
   }
 
   async resetInstance(userId: string): Promise<void> {
