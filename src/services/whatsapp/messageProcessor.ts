@@ -198,6 +198,11 @@ export class MessageProcessor {
         return;
       }
 
+      if (result.is_temporarily_unavailable) {
+        await markFailedRetriable(row.id, 'AI model temporarily unavailable. Auto retry scheduled.', 60000);
+        return;
+      }
+
       await markFailedRetriable(row.id, result.review_reason || 'AI Extraction failed', 300000);
       return;
     }

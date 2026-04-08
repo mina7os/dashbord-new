@@ -35,6 +35,7 @@ export interface ExtractedTransaction {
 export interface ExtractionResult {
   status: 'SUCCESS' | 'NO_FINANCIAL' | 'LOW_CONFIDENCE' | 'ERROR';
   is_quota_exceeded?: boolean;
+  is_temporarily_unavailable?: boolean;
   error_type?: 'quota_failure' | 'malformed_ai_response' | 'extraction_failure';
   source_type: MediaSourceType;
   confidence: number;
@@ -107,6 +108,35 @@ function detectCurrency(raw?: string | null): string | null {
 function extractReferenceNumber(text: string): string | null {
   const match = text.match(/(?:UPI\s*REF(?:\s*NO)?|UTR|REF(?:ERENCE)?(?:\s*NO)?|RRN)[\s:.-]*([A-Z0-9-]+)/i);
   return match?.[1]?.trim() || null;
+}
+
+function isGeminiQuotaError(error: any) {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.status === 429 || error?.code === 429 || message.includes('429') || message.includes('quota');
+}
+
+function isGeminiTemporaryAvailabilityError(error: any) {
+  const message = String(error?.message || '').toLowerCase();
+  return (
+    isGeminiQuotaError(error) ||
+    error?.status === 500 ||
+    error?.status === 503 ||
+    error?.status === 504 ||
+    error?.code === 500 ||
+    error?.code === 503 ||
+    error?.code === 504 ||
+    message.includes('503') ||
+    message.includes('504') ||
+    message.includes('unavailable') ||
+    message.includes('high demand') ||
+    message.includes('temporarily') ||
+    message.includes('resource exhausted') ||
+    message.includes('internal')
+  );
+}
+
+async function pause(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function trimCapturedName(value?: string | null): string | null {
@@ -593,31 +623,42 @@ export async function extractMessage(
       parts.push(buildInlineMediaPart(prepared.buffer, prepared.mimeType));
     }
 
-    const FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-lite'];
+    const FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
     let result: any = null;
     let fallbackError: any = null;
 
     for (const model of FALLBACK_MODELS) {
-      try {
-        result = await client.models.generateContent({
-          model,
-          contents: [{ role: 'user', parts }],
-          config: {
-            responseMimeType: 'application/json',
-            responseJsonSchema: GEMINI_RESPONSE_JSON_SCHEMA
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          result = await client.models.generateContent({
+            model,
+            contents: [{ role: 'user', parts }],
+            config: {
+              responseMimeType: 'application/json',
+              responseJsonSchema: GEMINI_RESPONSE_JSON_SCHEMA
+            }
+          });
+          break;
+        } catch (err: any) {
+          fallbackError = err;
+          const isQuota = isGeminiQuotaError(err);
+          const isTemporary = isGeminiTemporaryAvailabilityError(err);
+          if (!isTemporary) {
+            throw err;
           }
-        });
-        break; // Success
-      } catch (err: any) {
-        fallbackError = err;
-        const isQuota = err.message?.includes('429') || err.status === 429 || err.code === 429;
-        if (isQuota) {
-          console.warn(`[Extraction] Model ${model} Quota Exceeded (429). Falling back to next...`);
-          continue; // Try next available model
-        } else {
-          throw err; // Non-quota error, throw immediately
+
+          if (attempt < 2) {
+            console.warn(`[Extraction] Model ${model} transient failure on attempt ${attempt}. Retrying...`);
+            await pause(1200 * attempt);
+            continue;
+          }
+
+          console.warn(
+            `[Extraction] Model ${model} ${isQuota ? 'Quota Exceeded (429)' : 'temporarily unavailable'}. Falling back to next...`
+          );
         }
       }
+      if (result) break;
     }
 
     if (!result) {
@@ -655,14 +696,17 @@ export async function extractMessage(
     };
 
   } catch (error: any) {
-    const isQuotaError = error.message?.includes('429') || error.status === 429 || error.code === 429;
+    const isQuotaError = isGeminiQuotaError(error);
+    const isTemporaryAvailabilityError = isGeminiTemporaryAvailabilityError(error) && !isQuotaError;
     const isMalformedResponse = /empty structured json|invalid json|malformed json|missing .*?(modality|is_financial|confidence|transactions)/i.test(error.message || '');
     const errorMessage = isQuotaError 
       ? 'GLOBAL_QUOTA_EXHAUSTED'
-      : (error.message || 'AI Extraction failed');
+      : (isTemporaryAvailabilityError ? 'MODEL_TEMPORARILY_UNAVAILABLE' : (error.message || 'AI Extraction failed'));
 
     if (isQuotaError) {
       console.warn('[Extraction] ALL Models Exhausted (429). Emitting GLOBAL_QUOTA_EXHAUSTED.');
+    } else if (isTemporaryAvailabilityError) {
+      console.warn('[Extraction] All models temporarily unavailable. Scheduling retry.');
     } else {
       console.error('[Extraction] Fatal error:', error);
     }
@@ -670,6 +714,7 @@ export async function extractMessage(
     return {
       status: 'ERROR',
       is_quota_exceeded: isQuotaError,
+      is_temporarily_unavailable: isTemporaryAvailabilityError,
       error_type: isQuotaError ? 'quota_failure' : (isMalformedResponse ? 'malformed_ai_response' : 'extraction_failure'),
       source_type: 'unknown',
       confidence: 0,
