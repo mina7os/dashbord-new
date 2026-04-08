@@ -67,7 +67,7 @@ export default function Integrations(props: Props) {
   const fetchChats = async () => {
     setDiscoveryLoading(true);
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 20000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
     try {
       const res = await fetch(`/api/whatsapp/chats?userId=${user.id}`, {
         headers: authHeaders,
