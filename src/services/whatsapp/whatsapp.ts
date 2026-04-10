@@ -20,6 +20,9 @@ const WA_DISCOVERY_RETRY_DELAY_MS = Number(process.env.WA_DISCOVERY_RETRY_DELAY_
 const WA_DISCOVERY_MAX_ATTEMPTS = Number(process.env.WA_DISCOVERY_MAX_ATTEMPTS || 3);
 const WA_REPLY_READY_WAIT_MS = Number(process.env.WA_REPLY_READY_WAIT_MS || 2500);
 const WA_REPLY_READY_ATTEMPTS = Number(process.env.WA_REPLY_READY_ATTEMPTS || 6);
+const WA_RECONNECT_MAX_ATTEMPTS = Math.max(3, Number(process.env.WA_RECONNECT_MAX_ATTEMPTS || 6));
+const WA_RECONNECT_BASE_DELAY_MS = Math.max(2000, Number(process.env.WA_RECONNECT_BASE_DELAY_MS || 5000));
+const WA_RECONNECT_MAX_DELAY_MS = Math.max(WA_RECONNECT_BASE_DELAY_MS, Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 60000));
 const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_INTERVAL_MS || 20000);
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
 const WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS = Number(process.env.WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS || 1800);
@@ -397,19 +400,23 @@ export class WhatsAppManager {
       await this.executeHardWipe(userId);
       this.failureCounts.delete(userId);
       this.clearRuntimeState(userId, `Authentication failed. Please re-link your device.`);
-    } else if (failures <= 2) {
+    } else if (failures <= WA_RECONNECT_MAX_ATTEMPTS) {
       await this.cleanChromiumLocks(userId);
-      this.clearRuntimeState(userId, `Recovering connection: ${reason}. Retrying...`);
-      this.scheduleReconnect(userId);
+      const delayMs = Math.min(WA_RECONNECT_BASE_DELAY_MS * Math.max(1, failures), WA_RECONNECT_MAX_DELAY_MS);
+      this.clearRuntimeState(userId, `Recovering connection: ${reason}. Retrying in ${Math.round(delayMs / 1000)}s...`);
+      this.scheduleReconnect(userId, delayMs);
     } else {
       this.emitState(userId, 'failed', { status: 'failed', reason: `Failed to connect after ${failures} tries.` });
       this.clearRuntimeState(userId, `Failed to connect after ${failures} tries. Please manually reconnect.`, false);
     }
   }
 
-  private scheduleReconnect(userId: string) {
-    this.emitState(userId, 'reconnecting', { status: 'reconnecting' });
-    setTimeout(() => this.startInstance(userId), 3000);
+  private scheduleReconnect(userId: string, delayMs: number = WA_RECONNECT_BASE_DELAY_MS) {
+    this.emitState(userId, 'reconnecting', {
+      status: 'reconnecting',
+      message: `Retrying in ${Math.round(delayMs / 1000)}s...`
+    });
+    setTimeout(() => this.startInstance(userId), delayMs);
   }
 
   async restoreExistingSessions(): Promise<void> {
