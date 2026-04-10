@@ -146,6 +146,12 @@ export async function advanceStage(
   if (extra?.transactionCount !== undefined) payload.transaction_count = extra.transactionCount;
   if (extra?.metadata !== undefined) payload.metadata = extra.metadata;
 
+  // Successful terminal states should not retain stale transient failure data.
+  if (status === 'completed' || status === 'completed_transaction' || status === 'completed_non_transaction' || status === 'completed_duplicate') {
+    payload.last_error = null;
+    payload.next_retry_at = null;
+  }
+
   if (TERMINAL_STATUSES.includes(status) || status === 'review_required') {
     payload.processed_at = new Date().toISOString();
   }
