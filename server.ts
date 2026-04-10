@@ -135,6 +135,24 @@ function applyUserScope(query: any, access: any, column = 'user_id') {
 
 /** ─── App Setup & Bootstrap ────────────────────────────────────────────────── */
 async function startServer() {
+  await ensureAccessSchema();
+  console.log('[Startup] Validating infrastructure...');
+  const { success, results } = await validateInfrastructure();
+  
+  const degradedMode = results.some(r => !r.passed && (r.checked === 'Supabase Connection' || r.checked.startsWith('Storage')));
+  
+  if (!success) {
+    console.warn('\n[WARNING] Critical infrastructure checks failed. Starting in degraded mode.');
+    results.filter(r => !r.passed).forEach(r => console.warn(` - ${r.checked}: ${r.error}`));
+    console.warn('Some features (e.g., auto-restore) will be disabled until resolved.\n');
+  } else {
+    console.log('[Startup] Infrastructure healthy.');
+    
+    // Start background workers exactly once
+    const { startSheetSyncPoller } = await import('./src/services/sheets.ts');
+    startSheetSyncPoller();
+  }
+
   const app = express();
   const server = http.createServer(app);
 
@@ -165,45 +183,15 @@ async function startServer() {
 
   // Dependencies injection container
   const whatsapp = new WhatsAppManager(io);
-  const deps: ServerDependencies = { whatsapp, degradedMode: true };
-  let latestInfraResults: any[] = [];
-  let latestInfraCheckedAt: string | null = null;
-  let startupReady = false;
+  const deps: ServerDependencies = { whatsapp, degradedMode };
 
-  const runStartupTasks = async () => {
-    await ensureAccessSchema();
-    console.log('[Startup] Validating infrastructure...');
-    const { success, results } = await validateInfrastructure();
-
-    latestInfraResults = results;
-    latestInfraCheckedAt = new Date().toISOString();
-    deps.degradedMode = results.some(
-      (r) => !r.passed && (r.checked === 'Supabase Connection' || r.checked.startsWith('Storage'))
-    );
-
-    if (!success) {
-      console.warn('\n[WARNING] Critical infrastructure checks failed. Starting in degraded mode.');
-      results.filter(r => !r.passed).forEach(r => console.warn(` - ${r.checked}: ${r.error}`));
-      console.warn('Some features (e.g., auto-restore) will be disabled until resolved.\n');
-      startupReady = true;
-      return;
-    }
-
-    console.log('[Startup] Infrastructure healthy.');
-
-    const { startSheetSyncPoller } = await import('./src/services/sheets.ts');
-    startSheetSyncPoller();
-
-    if (deps.degradedMode) {
-      console.warn('[Startup] Skipping WhatsApp auto-restore due to degraded mode.');
-    } else {
-      await whatsapp.restoreExistingSessions().catch(err => {
-        console.error('[Startup] Auto-restore session failed:', err.message);
-      });
-    }
-
-    startupReady = true;
-  };
+  if (degradedMode) {
+    console.warn('[Startup] Skipping WhatsApp auto-restore due to degraded mode.');
+  } else {
+    await whatsapp.restoreExistingSessions().catch(err => {
+      console.error('[Startup] Auto-restore session failed:', err.message);
+    });
+  }
 
   io.on("connection", (socket) => {
     socket.on("join", async (userId: string, token: string) => {
@@ -217,13 +205,12 @@ async function startServer() {
 
   // Health endpoint (Public)
   app.get('/api/health', async (_req, res) => {
+    const { success, results } = await validateInfrastructure();
     res.json({
-      status: deps.degradedMode ? 'degraded' : 'healthy',
-      degradedMode: deps.degradedMode,
-      whatsappRestoreEnabled: startupReady && !deps.degradedMode,
-      infrastructure: latestInfraResults,
-      lastInfrastructureCheckAt: latestInfraCheckedAt,
-      startupReady,
+      status: success ? 'healthy' : 'degraded',
+      degradedMode: !success,
+      whatsappRestoreEnabled: !degradedMode,
+      infrastructure: results,
       uptime: process.uptime(),
       timestamp: new Date().toISOString()
     });
@@ -320,14 +307,8 @@ async function startServer() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 Server running on http://localhost:${PORT}`);
     console.log(`   Mode: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   State: ${deps.degradedMode ? 'DEGRADED' : 'HEALTHY'}`);
+    console.log(`   State: ${degradedMode ? 'DEGRADED' : 'HEALTHY'}`);
     console.log(`   CORS allowed origin: ${allowedOrigin}\n`);
-  });
-
-  void runStartupTasks().catch((err) => {
-    console.error('[Startup] Fatal bootstrap failure:', err?.message || err);
-    deps.degradedMode = true;
-    startupReady = true;
   });
 }
 
