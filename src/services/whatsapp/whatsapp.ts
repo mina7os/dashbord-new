@@ -29,6 +29,8 @@ const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_I
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
 const WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS = Number(process.env.WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS || 1800);
 const WA_MESSAGE_DEDUPE_TTL_MS = Number(process.env.WA_MESSAGE_DEDUPE_TTL_MS || 10 * 60 * 1000);
+const WWEBJS_WEB_VERSION = String(process.env.WWEBJS_WEB_VERSION || '').trim();
+const WWEBJS_REMOTE_HTML = String(process.env.WWEBJS_REMOTE_HTML || '').trim();
 const PUPPETEER_EXECUTABLE_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || undefined;
 const WA_AUTO_REPLY_ENABLED = String(process.env.WA_AUTO_REPLY_ENABLED || 'false').toLowerCase() === 'true';
 
@@ -487,7 +489,7 @@ export class WhatsAppManager {
   }
 
   private createClient(userId: string): WhatsAppClient {
-    return new Client({
+    const clientOptions: any = {
       authStrategy: new LocalAuth({ clientId: `user-${userId}` }),
       puppeteer: {
         headless: true,
@@ -502,12 +504,17 @@ export class WhatsAppManager {
       authTimeoutMs: WA_AUTH_TIMEOUT_MS,
       takeoverTimeoutMs: WA_TAKEOVER_TIMEOUT_MS,
       qrMaxRetries: WA_QR_MAX_RETRIES,
-      webVersionCache: {
+    };
+
+    // Checkpoint 2 behavior: only pin a WA Web build when operators explicitly configure it.
+    if (WWEBJS_WEB_VERSION && WWEBJS_REMOTE_HTML) {
+      clientOptions.webVersionCache = {
         type: 'remote',
-        remotePath: (process.env.WWEBJS_REMOTE_HTML || 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html')
-          .replace('{version}', process.env.WWEBJS_WEB_VERSION || '2.2412.54')
-      }
-    });
+        remotePath: WWEBJS_REMOTE_HTML.replace('{version}', WWEBJS_WEB_VERSION),
+      };
+    }
+
+    return new Client(clientOptions);
   }
 
   private bindClientEvents(userId: string, client: WhatsAppClient, currentGen: number) {
@@ -717,11 +724,12 @@ export class WhatsAppManager {
 
     for (let attempt = 1; attempt <= WA_DISCOVERY_MAX_ATTEMPTS; attempt++) {
       let mapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
+      const attemptTimeoutMs = WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 10000);
 
       try {
         mapped = await withTimeout(
           getLightweightChats(client),
-          8000,
+          attemptTimeoutMs,
           'Lightweight chat discovery timed out.'
         );
         console.log(`[WhatsApp | ${userId}] Lightweight chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
@@ -733,12 +741,33 @@ export class WhatsAppManager {
         try {
           mapped = await withTimeout(
             getLightweightContacts(client),
-            8000,
+            attemptTimeoutMs,
             'Contact discovery fallback timed out. Please try again in a few seconds.'
           );
           console.log(`[WhatsApp | ${userId}] Contact fallback returned ${mapped.length} contacts on attempt ${attempt}.`);
         } catch (contactError: any) {
           console.warn(`[WhatsApp | ${userId}] Contact fallback failed on attempt ${attempt}:`, contactError?.message || contactError);
+        }
+      }
+
+      if (mapped.length === 0) {
+        try {
+          const hydratedChats = await withTimeout(
+            client.getChats(),
+            attemptTimeoutMs,
+            'Hydrated WhatsApp chat discovery timed out.'
+          );
+          mapped = (hydratedChats || [])
+            .map((chat: any) => ({
+              id: chat?.id?._serialized || '',
+              name: chat?.name || chat?.formattedTitle || chat?.id?._serialized || 'Unknown Chat',
+              isGroup: Boolean(chat?.isGroup),
+              unreadCount: Number(chat?.unreadCount || 0),
+            }))
+            .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
+          console.log(`[WhatsApp | ${userId}] Hydrated chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
+        } catch (hydratedError: any) {
+          console.warn(`[WhatsApp | ${userId}] Hydrated chat discovery failed on attempt ${attempt}:`, hydratedError?.message || hydratedError);
         }
       }
 
