@@ -9,7 +9,7 @@ RUN echo "$APP_REVISION" > /tmp/app_revision
 
 # Install deps first for Docker layer caching
 COPY package*.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --include=dev
 
 # Copy source and build
 COPY . .
@@ -41,7 +41,7 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Copy only production node_modules and built assets
 COPY package*.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --include=dev
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/server.ts ./server.ts
