@@ -61,4 +61,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 
 ENV NODE_ENV=production
 
-CMD ["npx", "tsx", "server.ts"]
+CMD ["node", "--import", "tsx", "server.ts"]
