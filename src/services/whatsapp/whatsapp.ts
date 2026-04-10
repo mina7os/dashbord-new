@@ -23,6 +23,8 @@ const WA_REPLY_READY_ATTEMPTS = Number(process.env.WA_REPLY_READY_ATTEMPTS || 6)
 const WA_RECONNECT_MAX_ATTEMPTS = Math.max(3, Number(process.env.WA_RECONNECT_MAX_ATTEMPTS || 6));
 const WA_RECONNECT_BASE_DELAY_MS = Math.max(2000, Number(process.env.WA_RECONNECT_BASE_DELAY_MS || 5000));
 const WA_RECONNECT_MAX_DELAY_MS = Math.max(WA_RECONNECT_BASE_DELAY_MS, Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 60000));
+const WA_LOADING_TIMEOUT_MS = Math.max(120000, Number(process.env.WA_LOADING_TIMEOUT_MS || 180000));
+const WA_AUTHENTICATED_TIMEOUT_MS = Math.max(60000, Number(process.env.WA_AUTHENTICATED_TIMEOUT_MS || 90000));
 const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_INTERVAL_MS || 20000);
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
 const WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS = Number(process.env.WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS || 1800);
@@ -517,13 +519,13 @@ export class WhatsAppManager {
 
     client.on('loading_screen', (percent: number, message: string) => {
       if (this.generations.get(userId) !== currentGen) return;
-      this.setStageTimer(userId, 'loading', 120000);
+      this.setStageTimer(userId, 'loading', WA_LOADING_TIMEOUT_MS);
       this.emitState(userId, 'loading', { status: 'loading', percent, message });
     });
 
     client.on('authenticated', () => {
       if (this.generations.get(userId) !== currentGen) return;
-      this.clearStageTimer(userId);
+      this.setStageTimer(userId, 'authenticated', WA_AUTHENTICATED_TIMEOUT_MS);
       this.emitState(userId, 'auth', { status: 'authenticated' });
     });
 
