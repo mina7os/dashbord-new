@@ -370,10 +370,7 @@ export class WhatsAppManager {
 
       for (const entry of entries) {
         const entryPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          await removeLocks(entryPath);
-          continue;
-        }
+        if (entry.isDirectory()) { continue; }
 
         if (!lockNames.has(entry.name)) continue;
         try {
