@@ -354,11 +354,13 @@ export class WhatsAppManager {
   }
 
   private async cleanChromiumLocks(userId: string) {
-    const sessionDir = path.join(process.cwd(), '.wwebjs_auth', `session-user-${userId}`);
+    const authDir = path.join(process.cwd(), '.wwebjs_auth');
+    const sessionDir = path.join(authDir, `session-user-${userId}`);
+    const wwebjsCache = path.join(process.cwd(), '.wwebjs_cache');
     const lockNames = new Set(['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort', 'LOCK']);
-    if (!fs.existsSync(sessionDir)) return;
 
     const removeLocks = async (dir: string) => {
+      if (!fs.existsSync(dir)) return;
       let entries: fs.Dirent[] = [];
       try {
         entries = await fs.promises.readdir(dir, { withFileTypes: true });
@@ -376,17 +378,26 @@ export class WhatsAppManager {
         if (!lockNames.has(entry.name)) continue;
         try {
           await fs.promises.unlink(entryPath);
-        } catch {}
+          console.log(`[WhatsApp | ${userId}] Cleared stale lock file: ${entryPath}`);
+        } catch (e: any) {
+          console.warn(`[WhatsApp | ${userId}] Could not clear lock file ${entryPath}:`, e.message);
+        }
       }
     };
 
-    await removeLocks(sessionDir);
+    if (fs.existsSync(sessionDir)) await removeLocks(sessionDir);
+    await removeLocks(authDir);
+    await removeLocks(wwebjsCache);
   }
 
   private async killStaleChromiumProcesses(userId: string) {
     if (process.platform !== 'linux') return;
     const sessionMarker = `session-user-${userId}`;
-    await execFileAsync('pkill', ['-f', sessionMarker]);
+    try {
+      await execFileAsync('pkill', ['-f', sessionMarker]);
+    } catch (e) {
+      // Ignored: pkill returns >0 if no process matches
+    }
     await sleep(1000);
   }
 

@@ -135,24 +135,6 @@ function applyUserScope(query: any, access: any, column = 'user_id') {
 
 /** ─── App Setup & Bootstrap ────────────────────────────────────────────────── */
 async function startServer() {
-  await ensureAccessSchema();
-  console.log('[Startup] Validating infrastructure...');
-  const { success, results } = await validateInfrastructure();
-  
-  const degradedMode = results.some(r => !r.passed && (r.checked === 'Supabase Connection' || r.checked.startsWith('Storage')));
-  
-  if (!success) {
-    console.warn('\n[WARNING] Critical infrastructure checks failed. Starting in degraded mode.');
-    results.filter(r => !r.passed).forEach(r => console.warn(` - ${r.checked}: ${r.error}`));
-    console.warn('Some features (e.g., auto-restore) will be disabled until resolved.\n');
-  } else {
-    console.log('[Startup] Infrastructure healthy.');
-    
-    // Start background workers exactly once
-    const { startSheetSyncPoller } = await import('./src/services/sheets.ts');
-    startSheetSyncPoller();
-  }
-
   const app = express();
   const server = http.createServer(app);
 
@@ -181,17 +163,13 @@ async function startServer() {
   const PORT = parseInt(process.env.PORT || '3000', 10);
   app.use(express.json({ limit: '50mb' }));
 
-  // Dependencies injection container
-  const whatsapp = new WhatsAppManager(io);
-  const deps: ServerDependencies = { whatsapp, degradedMode };
+  // Shared application state
+  let isBootstrapping = true;
+  let validationResult: any = null;
+  let degradedMode = false;
 
-  if (degradedMode) {
-    console.warn('[Startup] Skipping WhatsApp auto-restore due to degraded mode.');
-  } else {
-    await whatsapp.restoreExistingSessions().catch(err => {
-      console.error('[Startup] Auto-restore session failed:', err.message);
-    });
-  }
+  const whatsapp = new WhatsAppManager(io);
+  const deps: ServerDependencies = { whatsapp, get degradedMode() { return degradedMode; } };
 
   io.on("connection", (socket) => {
     socket.on("join", async (userId: string, token: string) => {
@@ -205,12 +183,20 @@ async function startServer() {
 
   // Health endpoint (Public)
   app.get('/api/health', async (_req, res) => {
-    const { success, results } = await validateInfrastructure();
+    if (isBootstrapping) {
+      return res.json({
+        status: 'bootstrapping',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // We can confidently use validationResult because we're past bootstrapping
     res.json({
-      status: success ? 'healthy' : 'degraded',
-      degradedMode: !success,
+      status: validationResult?.success ? 'healthy' : 'degraded',
+      degradedMode,
       whatsappRestoreEnabled: !degradedMode,
-      infrastructure: results,
+      infrastructure: validationResult?.results || [],
       uptime: process.uptime(),
       timestamp: new Date().toISOString()
     });
@@ -307,8 +293,43 @@ async function startServer() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 Server running on http://localhost:${PORT}`);
     console.log(`   Mode: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   State: ${degradedMode ? 'DEGRADED' : 'HEALTHY'}`);
     console.log(`   CORS allowed origin: ${allowedOrigin}\n`);
+    
+    // Begin async bootstrapping
+    (async () => {
+      try {
+        console.log('[Startup] Validating infrastructure asynchronously...');
+        await ensureAccessSchema();
+        const { success, results } = await validateInfrastructure();
+        
+        validationResult = { success, results };
+        degradedMode = results.some(r => !r.passed && (r.checked === 'Supabase Connection' || r.checked.startsWith('Storage')));
+        
+        if (!success) {
+          console.warn('\n[WARNING] Critical infrastructure checks failed. Starting in degraded mode.');
+          results.filter(r => !r.passed).forEach(r => console.warn(` - ${r.checked}: ${r.error}`));
+          console.warn('Some features (e.g., auto-restore) will be disabled until resolved.\n');
+        } else {
+          console.log('[Startup] Infrastructure healthy.');
+          const { startSheetSyncPoller } = await import('./src/services/sheets.ts');
+          startSheetSyncPoller();
+        }
+        
+        isBootstrapping = false;
+
+        if (degradedMode) {
+          console.warn('[Startup] Skipping WhatsApp auto-restore due to degraded mode.');
+        } else {
+          await whatsapp.restoreExistingSessions().catch(err => {
+            console.error('[Startup] Auto-restore session failed:', err.message);
+          });
+        }
+      } catch (err) {
+        console.error('[Startup] Fatal error during async bootstrap:', err);
+        isBootstrapping = false;
+        degradedMode = true;
+      }
+    })();
   });
 }
 
