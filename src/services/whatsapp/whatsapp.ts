@@ -605,6 +605,12 @@ export class WhatsAppManager {
     this.initializingClients.delete(userId);
   }
 
+  async shutdownAll() {
+    console.log('[WhatsApp] Shutting down all active sessions gracefully...');
+    const users = Array.from(new Set([...this.activeClients.keys(), ...this.initializingClients.keys()]));
+    await Promise.all(users.map(u => this.teardownClient(u).catch(() => {})));
+  }
+
   async handleIncomingMessage(userId: string, msg: any, client: WhatsAppClient, eventName: string = 'message_create'): Promise<'captured' | 'skipped' | 'failed'> {
     const messageId = getMessageUniqueId(msg);
     const chatId = msg.fromMe ? (msg.to || msg.from) : msg.from;

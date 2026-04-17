@@ -331,6 +331,31 @@ async function startServer() {
       }
     })();
   });
+
+  const gracefulShutdown = async (signal: string) => {
+    console.log(`\n[${signal}] Received. Starting graceful shutdown...`);
+    try {
+      console.log('Shutting down WhatsApp clients cleanly...');
+      await deps.whatsapp.shutdownAll(); 
+      console.log('WhatsApp clients safely destroyed.');
+    } catch (err) {
+      console.error('Error during WhatsApp shutdown:', err);
+    }
+    
+    server.close(() => {
+      console.log('HTTP Server closed. Process exiting normally.');
+      process.exit(0);
+    });
+    
+    // Fallback if it takes too long
+    setTimeout(() => {
+      console.error('Graceful shutdown timed out. Forcing exit.');
+      process.exit(1);
+    }, 8000);
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 }
 
 /** ─── Route Handlers ───────────────────────────────────────────────────────── */

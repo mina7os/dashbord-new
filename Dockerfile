@@ -24,6 +24,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     chromium \
     curl \
+    procps \
     libatk-bridge2.0-0 \
     libdrm2 \
     libxkbcommon0 \
