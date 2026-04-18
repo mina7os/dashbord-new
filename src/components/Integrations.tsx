@@ -38,7 +38,37 @@ export default function Integrations(props: Props) {
     hasMedia: boolean;
   };
 
-  const [availableChats, setAvailableChats] = useState<any[]>([]);
+  type ChatOption = {
+    id: string;
+    name: string;
+    isGroup: boolean;
+    unreadCount?: number;
+  };
+
+  const mergeChatOptions = (liveChats: ChatOption[], configuredChats: ChatOption[]): ChatOption[] => {
+    const merged = new Map<string, ChatOption>();
+    for (const chat of [...configuredChats, ...liveChats]) {
+      if (!chat?.id) continue;
+      const existing = merged.get(chat.id);
+      if (!existing) {
+        merged.set(chat.id, chat);
+        continue;
+      }
+
+      merged.set(chat.id, {
+        ...existing,
+        ...chat,
+        name: chat.name || existing.name,
+        isGroup: existing.isGroup || chat.isGroup,
+        unreadCount: Math.max(existing.unreadCount || 0, chat.unreadCount || 0),
+      });
+    }
+
+    return Array.from(merged.values()).sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  const [availableChats, setAvailableChats] = useState<ChatOption[]>([]);
+  const [configuredChats, setConfiguredChats] = useState<ChatOption[]>([]);
   const [monitoredChatIds, setMonitoredChatIds] = useState<string[]>([]);
   const [showSelector, setShowSelector] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
@@ -56,8 +86,20 @@ export default function Integrations(props: Props) {
     if (!isManager) return;
     // Sync monitored chats on mount
     const loadMonitored = async () => {
-      const { data: chats } = await supabase.from('whatsapp_connected_chats').select('chat_id').eq('user_id', user.id).eq('is_active', true);
-      if (chats) setMonitoredChatIds(chats.map((c: any) => c.chat_id));
+      const { data: chats } = await supabase
+        .from('whatsapp_connected_chats')
+        .select('chat_id, chat_name, chat_type')
+        .eq('user_id', user.id)
+        .eq('is_active', true);
+      if (chats) {
+        setMonitoredChatIds(chats.map((c: any) => c.chat_id));
+        setConfiguredChats(chats.map((c: any) => ({
+          id: c.chat_id,
+          name: c.chat_name || c.chat_id,
+          isGroup: String(c.chat_type || '').toLowerCase() === 'group',
+          unreadCount: 0,
+        })));
+      }
     };
     loadMonitored();
   }, [isManager, user.id]);
@@ -75,7 +117,7 @@ export default function Integrations(props: Props) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to fetch chats');
-      setAvailableChats(data.chats);
+      setAvailableChats(Array.isArray(data.chats) ? data.chats : []);
     } catch (err: any) {
       const message =
         err?.name === 'AbortError'
@@ -88,7 +130,8 @@ export default function Integrations(props: Props) {
     }
   };
 
-  const activeChatOptions = availableChats.filter(chat => monitoredChatIds.includes(chat.id));
+  const visibleChats = mergeChatOptions(availableChats, configuredChats);
+  const activeChatOptions = visibleChats.filter(chat => monitoredChatIds.includes(chat.id));
 
   const handleBackfill = async (lookbackMinutes = 120) => {
     if (monitoredChatIds.length === 0) {
@@ -169,12 +212,17 @@ export default function Integrations(props: Props) {
     }
   };
 
-  const toggleChat = async (chat: any) => {
+  const toggleChat = async (chat: ChatOption) => {
     const isActive = monitoredChatIds.includes(chat.id);
     const newIds = isActive
       ? monitoredChatIds.filter(id => id !== chat.id)
       : [...monitoredChatIds, chat.id];
     setMonitoredChatIds(newIds);
+    setConfiguredChats(prev =>
+      isActive
+        ? prev.filter(existing => existing.id !== chat.id)
+        : mergeChatOptions([], [...prev, { id: chat.id, name: chat.name, isGroup: chat.isGroup, unreadCount: 0 }])
+    );
 
     if (isActive) {
       await supabase.from('whatsapp_connected_chats')
@@ -506,13 +554,13 @@ export default function Integrations(props: Props) {
                   <RefreshCw size={24} className="spinner" />
                   <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>Loading chats...</p>
                 </div>
-              ) : availableChats.length === 0 ? (
+              ) : visibleChats.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--muted)', fontSize: '0.8rem' }}>
                   No chats found. Make sure WhatsApp is connected.
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {availableChats.map(chat => (
+                  {visibleChats.map(chat => (
                     <label key={chat.id} style={{
                       display: 'flex', alignItems: 'center', gap: '0.75rem',
                       padding: '8px 12px', background: 'var(--surface2)',
