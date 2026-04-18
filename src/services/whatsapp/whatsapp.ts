@@ -219,6 +219,51 @@ async function getActiveChatConfig(userId: string, chatId: string) {
   return data;
 }
 
+async function getDatabaseBackedChats(userId: string): Promise<ChatSummary[]> {
+  const [connectedChatsRes, incomingMessagesRes] = await Promise.all([
+    supabaseAdmin
+      .from('whatsapp_connected_chats')
+      .select('chat_id, chat_name, chat_type, is_active, updated_at')
+      .eq('user_id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(100),
+    supabaseAdmin
+      .from('incoming_messages')
+      .select('chat_id, sender_name, received_at')
+      .eq('user_id', userId)
+      .order('received_at', { ascending: false })
+      .limit(200),
+  ]);
+
+  const connectedChats = Array.isArray(connectedChatsRes.data) ? connectedChatsRes.data : [];
+  const incomingMessages = Array.isArray(incomingMessagesRes.data) ? incomingMessagesRes.data : [];
+
+  const fromConnections: ChatSummary[] = connectedChats
+    .map((row: any) => ({
+      id: String(row.chat_id || '').trim(),
+      name: String(row.chat_name || row.chat_id || 'Known Source').trim(),
+      isGroup: String(row.chat_type || '').toLowerCase() === 'group',
+      unreadCount: row.is_active ? 1 : 0,
+    }))
+    .filter((row) => row.id);
+
+  const seen = new Set(fromConnections.map((row) => row.id));
+  const fromIncoming: ChatSummary[] = [];
+  for (const row of incomingMessages) {
+    const chatId = String((row as any).chat_id || '').trim();
+    if (!chatId || seen.has(chatId)) continue;
+    seen.add(chatId);
+    fromIncoming.push({
+      id: chatId,
+      name: String((row as any).sender_name || chatId || 'Recent WhatsApp Chat').trim(),
+      isGroup: chatId.endsWith('@g.us'),
+      unreadCount: 0,
+    });
+  }
+
+  return mergeChatSummaries(fromConnections, fromIncoming);
+}
+
 async function getLightweightChats(client: WhatsAppClient): Promise<Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }>> {
   return client.pupPage.evaluate(() => {
     try {
@@ -915,6 +960,20 @@ export class WhatsAppManager {
     if (cached && cached.length > 0) return cached;
 
     const client = this.getReadyClient(userId);
+    const databaseBackedChats = await getDatabaseBackedChats(userId);
+    if (databaseBackedChats.length > 0) {
+      this.cachedChats.set(userId, databaseBackedChats);
+      void this.refreshChatCache(userId, client)
+        .then((freshChats) => {
+          if (freshChats.length > 0) {
+            this.cachedChats.set(userId, freshChats);
+          }
+        })
+        .catch(() => {});
+      console.log(`[WhatsApp | ${userId}] Returning ${databaseBackedChats.length} database-backed chats while live discovery refreshes in background.`);
+      return databaseBackedChats;
+    }
+
     const mapped = await this.refreshChatCache(userId, client);
     if (mapped.length > 0) {
       console.log(`[WhatsApp | ${userId}] Chat discovery returned ${mapped.length} chats.`);
