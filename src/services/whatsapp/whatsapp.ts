@@ -28,6 +28,9 @@ const WA_RECONNECT_BASE_DELAY_MS = Math.max(2000, Number(process.env.WA_RECONNEC
 const WA_RECONNECT_MAX_DELAY_MS = Math.max(WA_RECONNECT_BASE_DELAY_MS, Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 60000));
 const WA_LOADING_TIMEOUT_MS = Math.max(120000, Number(process.env.WA_LOADING_TIMEOUT_MS || 180000));
 const WA_AUTHENTICATED_TIMEOUT_MS = Math.max(60000, Number(process.env.WA_AUTHENTICATED_TIMEOUT_MS || 90000));
+const WA_AUTO_RESTORE_LOOKBACK_DAYS = Math.max(1, Number(process.env.WA_AUTO_RESTORE_LOOKBACK_DAYS || 30));
+const WA_AUTO_RESTORE_MAX_SESSIONS = Math.max(1, Number(process.env.WA_AUTO_RESTORE_MAX_SESSIONS || 2));
+const WA_AUTO_RESTORE_START_DELAY_MS = Math.max(1000, Number(process.env.WA_AUTO_RESTORE_START_DELAY_MS || 15000));
 const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_INTERVAL_MS || 20000);
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
 const WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS = Number(process.env.WA_ACTIVE_CHAT_SYNC_LOOKBACK_SECONDS || 1800);
@@ -59,6 +62,7 @@ export interface WAState {
 
 type WhatsAppClient = any;
 type ChatSummary = { id: string; name: string; isGroup: boolean; unreadCount: number };
+type StoredSessionInfo = { userId: string; dirName: string; touchedAt: number };
 
 export type ChatMessagePreview = {
   id: string;
@@ -349,6 +353,30 @@ async function getHydratedChats(client: WhatsAppClient): Promise<ChatSummary[]> 
     .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
 }
 
+function parseStoredSessionInfos(authDir: string): StoredSessionInfo[] {
+  if (!fs.existsSync(authDir)) return [];
+
+  const seen = new Set<string>();
+  const sessions: StoredSessionInfo[] = [];
+  for (const dirName of fs.readdirSync(authDir)) {
+    let userId = '';
+    if (dirName.startsWith('session-user-')) userId = dirName.replace('session-user-', '');
+    else if (dirName.startsWith('session-')) userId = dirName.replace('session-', '');
+    if (!userId || seen.has(userId)) continue;
+
+    const dirPath = path.join(authDir, dirName);
+    let touchedAt = 0;
+    try {
+      touchedAt = fs.statSync(dirPath).mtimeMs;
+    } catch {}
+
+    seen.add(userId);
+    sessions.push({ userId, dirName, touchedAt });
+  }
+
+  return sessions.sort((a, b) => b.touchedAt - a.touchedAt);
+}
+
 // -----------------------------
 // Main Manager
 // -----------------------------
@@ -527,6 +555,60 @@ export class WhatsAppManager {
     await sleep(1000);
   }
 
+  private async resolveAutoRestoreCandidates(sessions: StoredSessionInfo[]): Promise<StoredSessionInfo[]> {
+    if (sessions.length === 0) return [];
+
+    const userIds = sessions.map((session) => session.userId);
+    const cutoffIso = new Date(Date.now() - WA_AUTO_RESTORE_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const scores = new Map<string, number>();
+
+    const [connectedChatsRes, incomingMessagesRes] = await Promise.all([
+      supabaseAdmin
+        .from('whatsapp_connected_chats')
+        .select('user_id, is_active, updated_at')
+        .in('user_id', userIds)
+        .order('updated_at', { ascending: false })
+        .limit(500),
+      supabaseAdmin
+        .from('incoming_messages')
+        .select('user_id, received_at, created_at')
+        .in('user_id', userIds)
+        .gte('created_at', cutoffIso)
+        .order('created_at', { ascending: false })
+        .limit(500),
+    ]);
+
+    for (const row of Array.isArray(connectedChatsRes.data) ? connectedChatsRes.data : []) {
+      const userId = String((row as any).user_id || '').trim();
+      if (!userId) continue;
+      const next = (scores.get(userId) || 0) + ((row as any).is_active ? 100 : 25);
+      scores.set(userId, next);
+    }
+
+    for (const row of Array.isArray(incomingMessagesRes.data) ? incomingMessagesRes.data : []) {
+      const userId = String((row as any).user_id || '').trim();
+      if (!userId) continue;
+      const next = (scores.get(userId) || 0) + 10;
+      scores.set(userId, next);
+    }
+
+    const ranked = sessions
+      .map((session) => ({ session, score: scores.get(session.userId) || 0 }))
+      .filter(({ score }) => score > 0)
+      .sort((a, b) => {
+        if (a.score !== b.score) return b.score - a.score;
+        return b.session.touchedAt - a.session.touchedAt;
+      })
+      .map(({ session }) => session);
+
+    if (ranked.length > 0) {
+      return ranked.slice(0, WA_AUTO_RESTORE_MAX_SESSIONS);
+    }
+
+    // Fall back to the most recently touched stored session rather than reviving every stale session.
+    return sessions.slice(0, 1);
+  }
+
   private async handleConnectionFailure(userId: string, reason: string) {
     this.clearStageTimer(userId);
     this.startupLocks.delete(userId); 
@@ -541,6 +623,11 @@ export class WhatsAppManager {
       await this.executeHardWipe(userId);
       this.failureCounts.delete(userId);
       this.clearRuntimeState(userId, `Authentication failed. Please re-link your device.`);
+    } else if (reason.includes('Max qrcode retries reached')) {
+      await this.executeHardWipe(userId);
+      this.failureCounts.delete(userId);
+      this.emitState(userId, 'failed', { status: 'failed', reason: 'QR code expired before linking completed.' });
+      this.clearRuntimeState(userId, 'QR code expired before linking completed. Please reconnect when you are ready to scan.', false);
     } else if (failures <= WA_RECONNECT_MAX_ATTEMPTS) {
       await this.cleanChromiumLocks(userId);
       const delayMs = Math.min(WA_RECONNECT_BASE_DELAY_MS * Math.max(1, failures), WA_RECONNECT_MAX_DELAY_MS);
@@ -564,18 +651,20 @@ export class WhatsAppManager {
     const authDir = path.join(process.cwd(), '.wwebjs_auth');
     if (!fs.existsSync(authDir)) return;
     try {
-      const restoredUserIds = new Set<string>();
-      const dirs = fs.readdirSync(authDir);
-      for (const d of dirs) {
-        let userId = '';
-        if (d.startsWith('session-user-')) userId = d.replace('session-user-', '');
-        else if (d.startsWith('session-')) userId = d.replace('session-', '');
+      const sessions = parseStoredSessionInfos(authDir);
+      const candidates = await this.resolveAutoRestoreCandidates(sessions);
+      const skipped = sessions.filter((session) => !candidates.some((candidate) => candidate.userId === session.userId));
 
-        if (userId && !restoredUserIds.has(userId)) {
-          console.log(`[WhatsApp] Auto-restoring session for user: ${userId}`);
-          restoredUserIds.add(userId);
-          this.startInstance(userId).catch(() => {});
-        }
+      if (skipped.length > 0) {
+        console.log(`[WhatsApp] Skipping auto-restore for stale sessions: ${skipped.map((session) => session.userId).join(', ')}`);
+      }
+
+      for (const [index, session] of candidates.entries()) {
+        const delayMs = index * WA_AUTO_RESTORE_START_DELAY_MS;
+        console.log(`[WhatsApp] Auto-restoring session for user: ${session.userId}${delayMs ? ` after ${delayMs}ms` : ''}`);
+        setTimeout(() => {
+          this.startInstance(session.userId).catch(() => {});
+        }, delayMs);
       }
     } catch {}
   }
