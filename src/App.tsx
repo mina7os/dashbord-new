@@ -8,6 +8,18 @@ import { Search, RefreshCw, Check, X, AlertCircle, TrendingUp, Wallet, Clock, Se
 import Integrations from './components/Integrations';
 import { supabase } from './lib/supabase';
 
+type WhatsAppUiStatus =
+  | 'disconnected'
+  | 'connecting'
+  | 'qr'
+  | 'loading'
+  | 'authenticated'
+  | 'ready'
+  | 'initializing'
+  | 'cleaning'
+  | 'reconnecting'
+  | 'failed';
+
 // â”€â”€â”€ Types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interface Transaction {
   id?: string;
@@ -755,15 +767,20 @@ export default function App() {
   // Integration States
   const [googleConnected, setGoogleConnected] = useState(false);
   const [sheetUrl, setSheetUrl] = useState<string | null>(null);
-  const [whatsappStatus, setWhatsappStatus] = useState<any>('disconnected');
+  const [whatsappStatus, setWhatsappStatus] = useState<WhatsAppUiStatus>('disconnected');
   const [whatsappStatusPayload, setWhatsappStatusPayload] = useState<any>(null);
   const [qrCode, setQrCode] = useState<string | null>(null);
   const socketRef = useRef<any>(null);
   const setupAttemptedRef = useRef<boolean>(false);
+  const lastWhatsappStatusRef = useRef<WhatsAppUiStatus>('disconnected');
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
+
+  useEffect(() => {
+    lastWhatsappStatusRef.current = whatsappStatus;
+  }, [whatsappStatus]);
 
   const addToast = useCallback((message: string, type: Toast['type'] = 'info') => {
     const id = Math.random().toString(36).slice(2);
@@ -991,7 +1008,7 @@ export default function App() {
             const waData = await waRes.json();
             setWhatsappStatus(waData.status);
             setWhatsappStatusPayload(waData);
-            if (waData.qr) setQrCode(waData.qr);
+            setQrCode(waData.qr || null);
           }
         }
       } catch (err) {
@@ -1004,6 +1021,7 @@ export default function App() {
     // Socket Setup
     if (!access?.canUseIntegrations) return;
 
+    socketRef.current?.close();
     const socket = io();
     socketRef.current = socket;
     socket.emit('join', session.user.id, session.access_token);
@@ -1012,14 +1030,21 @@ export default function App() {
       console.log('[Socket] WhatsApp update:', state);
       setWhatsappStatus(state.status);
       setWhatsappStatusPayload(state);
-      if (state.qr) setQrCode(state.qr);
-      if (state.status === 'ready') {
+      setQrCode(state.qr || null);
+      if (state.status === 'ready' && lastWhatsappStatusRef.current !== 'ready') {
         setQrCode(null);
         addToast('WhatsApp connected!', 'success');
       }
+      if (state.status === 'failed' && state.reason) {
+        addToast(state.reason, 'error');
+      }
+      lastWhatsappStatusRef.current = state.status;
     });
 
-    return () => { socket.close(); };
+    return () => {
+      socket.close();
+      if (socketRef.current === socket) socketRef.current = null;
+    };
   }, [session, access?.canUseIntegrations, addToast]);
 
   useEffect(() => {
@@ -1045,7 +1070,7 @@ export default function App() {
     };
 
     void syncWhatsappStatus();
-    const interval = window.setInterval(syncWhatsappStatus, 5000);
+    const interval = window.setInterval(syncWhatsappStatus, 15000);
 
     return () => {
       cancelled = true;
@@ -1056,6 +1081,8 @@ export default function App() {
   const handleConnectWhatsApp = async () => {
     if (!session) return;
     setWhatsappStatus('connecting');
+    setWhatsappStatusPayload({ status: 'connecting' });
+    setQrCode(null);
     try {
       const res = await fetch('/api/whatsapp/connect', {
         method: 'POST',
@@ -1084,6 +1111,7 @@ export default function App() {
       if (res.ok) {
         setWhatsappStatus('disconnected');
         setWhatsappStatusPayload(null);
+        setQrCode(null);
         addToast('WhatsApp disconnected.', 'info');
       }
     } catch (err: any) {

@@ -13,7 +13,7 @@ interface Props {
   // Shared persistent states
   googleConnected: boolean;
   sheetUrl: string | null;
-  whatsappStatus: 'disconnected' | 'connecting' | 'qr' | 'loading' | 'authenticated' | 'ready' | 'initializing' | 'cleaning';
+  whatsappStatus: 'disconnected' | 'connecting' | 'qr' | 'loading' | 'authenticated' | 'ready' | 'initializing' | 'cleaning' | 'reconnecting' | 'failed';
   whatsappStatusPayload: any;
   qrCode: string | null;
   onConnectWhatsApp: () => void;
@@ -67,7 +67,7 @@ export default function Integrations(props: Props) {
   const fetchChats = async () => {
     setDiscoveryLoading(true);
     const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 20000);
+    const timeoutId = window.setTimeout(() => controller.abort(), 45000);
     try {
       const res = await fetch(`/api/whatsapp/chats?userId=${user.id}`, {
         headers: authHeaders,
@@ -434,6 +434,19 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
+        {isManager && whatsappStatus === 'failed' && (
+          <div style={{ textAlign: 'center', padding: '1.5rem', background: 'rgba(239,68,68,0.08)', borderRadius: '16px', border: '1px solid rgba(239,68,68,0.22)' }}>
+            <p style={{ margin: 0, fontWeight: 600, color: '#fca5a5' }}>WhatsApp session needs attention</p>
+            <p style={{ margin: '0.75rem 0 1rem', fontSize: '0.85rem', color: 'var(--muted)' }}>
+              {whatsappStatusPayload?.reason || 'The current browser session failed. Reconnect to restore ingestion.'}
+            </p>
+            <button className="primary-button" onClick={onConnectWhatsApp}>
+              <RefreshCw size={18} />
+              Reconnect WhatsApp
+            </button>
+          </div>
+        )}
+
         {isManager && whatsappStatus === 'qr' && qrCode && (
           <div style={{ textAlign: 'center' }}>
             <div style={{ padding: '0.75rem', background: 'rgba(255,193,7,0.1)', borderRadius: '12px', marginBottom: '1rem', border: '1px solid rgba(255,193,7,0.2)' }}>
@@ -451,12 +464,13 @@ export default function Integrations(props: Props) {
           </div>
         )}
 
-        {isManager && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning') && (
+        {isManager && (whatsappStatus === 'connecting' || whatsappStatus === 'initializing' || whatsappStatus === 'loading' || whatsappStatus === 'authenticated' || whatsappStatus === 'cleaning' || whatsappStatus === 'reconnecting') && (
           <div style={{ textAlign: 'center', padding: '2rem', background: 'rgba(255,255,255,0.05)', borderRadius: '16px', border: '1px solid var(--border)' }}>
             <RefreshCw size={32} className="spinner" color="var(--primary)" />
             <p style={{ marginTop: '1.25rem', fontWeight: 500, color: 'white' }}>
               {whatsappStatus === 'initializing' ? 'Initializing Core Engine...' : 
                whatsappStatus === 'authenticated' ? 'Authentication Accepted' :
+               whatsappStatus === 'reconnecting' ? 'Restoring WhatsApp Session...' :
                whatsappStatus === 'cleaning' ? 'Cleaning up stale process...' :
                whatsappStatus === 'loading' ? (whatsappStatusPayload?.message || 'Loading WhatsApp Data...') : 
                'Connecting to WhatsApp...'}

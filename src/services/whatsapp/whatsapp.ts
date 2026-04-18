@@ -18,6 +18,9 @@ const WA_STARTUP_TIMEOUT_MS = Number(process.env.WA_STARTUP_TIMEOUT_MS || 180000
 const WA_DISCOVERY_TIMEOUT_MS = Number(process.env.WA_DISCOVERY_TIMEOUT_MS || 25000);
 const WA_DISCOVERY_RETRY_DELAY_MS = Number(process.env.WA_DISCOVERY_RETRY_DELAY_MS || 3000);
 const WA_DISCOVERY_MAX_ATTEMPTS = Number(process.env.WA_DISCOVERY_MAX_ATTEMPTS || 3);
+const WA_DISCOVERY_LIGHTWEIGHT_TIMEOUT_MS = Math.max(3000, Number(process.env.WA_DISCOVERY_LIGHTWEIGHT_TIMEOUT_MS || 8000));
+const WA_DISCOVERY_CONTACT_TIMEOUT_MS = Math.max(3000, Number(process.env.WA_DISCOVERY_CONTACT_TIMEOUT_MS || 5000));
+const WA_DISCOVERY_HYDRATED_TIMEOUT_MS = Math.max(5000, Number(process.env.WA_DISCOVERY_HYDRATED_TIMEOUT_MS || 12000));
 const WA_REPLY_READY_WAIT_MS = Number(process.env.WA_REPLY_READY_WAIT_MS || 2500);
 const WA_REPLY_READY_ATTEMPTS = Number(process.env.WA_REPLY_READY_ATTEMPTS || 6);
 const WA_RECONNECT_MAX_ATTEMPTS = Math.max(3, Number(process.env.WA_RECONNECT_MAX_ATTEMPTS || 6));
@@ -55,6 +58,7 @@ export interface WAState {
 }
 
 type WhatsAppClient = any;
+type ChatSummary = { id: string; name: string; isGroup: boolean; unreadCount: number };
 
 export type ChatMessagePreview = {
   id: string;
@@ -176,6 +180,34 @@ function execFileAsync(file: string, args: string[]): Promise<void> {
   });
 }
 
+function mergeChatSummaries(...sources: ChatSummary[][]): ChatSummary[] {
+  const merged = new Map<string, ChatSummary>();
+
+  for (const source of sources) {
+    for (const item of source) {
+      if (!item?.id) continue;
+
+      const existing = merged.get(item.id);
+      if (!existing) {
+        merged.set(item.id, item);
+        continue;
+      }
+
+      merged.set(item.id, {
+        id: item.id,
+        name: existing.name && existing.name !== existing.id ? existing.name : item.name,
+        isGroup: existing.isGroup || item.isGroup,
+        unreadCount: Math.max(existing.unreadCount || 0, item.unreadCount || 0),
+      });
+    }
+  }
+
+  return Array.from(merged.values()).sort((a, b) => {
+    if (a.isGroup !== b.isGroup) return a.isGroup ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 async function getActiveChatConfig(userId: string, chatId: string) {
   const { data } = await supabaseAdmin
     .from('whatsapp_connected_chats')
@@ -238,6 +270,40 @@ async function getLightweightContacts(client: WhatsAppClient): Promise<Array<{ i
   });
 }
 
+async function getHydratedContacts(client: WhatsAppClient): Promise<ChatSummary[]> {
+  const contacts = await (client.getContacts() as Promise<any[]>);
+  return (Array.isArray(contacts) ? contacts : [])
+    .map((contact: any) => ({
+      id: contact?.id?._serialized || '',
+      name:
+        contact?.pushname ||
+        contact?.name ||
+        contact?.shortName ||
+        contact?.number ||
+        contact?.formattedName ||
+        contact?.id?._serialized ||
+        'Unknown Contact',
+      isGroup: false,
+      unreadCount: 0,
+      isWAContact: Boolean(contact?.isWAContact),
+      isMe: Boolean(contact?.isMe),
+    }))
+    .filter((contact: any) => contact.id.endsWith('@c.us') && contact.isWAContact && !contact.isMe)
+    .map(({ id, name, isGroup, unreadCount }: any) => ({ id, name, isGroup, unreadCount }));
+}
+
+async function getHydratedChats(client: WhatsAppClient): Promise<ChatSummary[]> {
+  const chats = await (client.getChats() as Promise<any[]>);
+  return (Array.isArray(chats) ? chats : [])
+    .map((chat: any) => ({
+      id: chat?.id?._serialized || '',
+      name: chat?.name || chat?.formattedTitle || chat?.id?._serialized || 'Unknown Chat',
+      isGroup: Boolean(chat?.isGroup),
+      unreadCount: Number(chat?.unreadCount || 0),
+    }))
+    .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
+}
+
 // -----------------------------
 // Main Manager
 // -----------------------------
@@ -245,7 +311,7 @@ export class WhatsAppManager {
   private activeClients: Map<string, WhatsAppClient> = new Map(); // Only 'ready' clients
   private initializingClients: Map<string, WhatsAppClient> = new Map(); // Clients bootstrapping
   private states: Map<string, WAState> = new Map();
-  private cachedChats: Map<string, Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }>> = new Map();
+  private cachedChats: Map<string, ChatSummary[]> = new Map();
   
   private inFlightMessages: Set<string> = new Set();
   private startupLocks: Map<string, { startedAt: number }> = new Map();
@@ -274,7 +340,25 @@ export class WhatsAppManager {
   }
 
   triggerActiveChatSync(userId: string) {
-    return;
+    const state = this.getStatus(userId).status;
+    const client = this.getSyncClient(userId);
+
+    if (!client) return;
+
+    const browserDisconnected = Boolean(client?.pupBrowser?.isConnected && !client.pupBrowser.isConnected());
+    const pageClosed = Boolean(client?.pupPage?.isClosed && client.pupPage.isClosed());
+
+    if (browserDisconnected || pageClosed) {
+      void this.handleConnectionFailure(userId, 'Browser session became unavailable.');
+      return;
+    }
+
+    if (state === 'ready') {
+      const cached = this.cachedChats.get(userId);
+      if (!cached || cached.length === 0) {
+        void this.refreshChatCache(userId, client).catch(() => {});
+      }
+    }
   }
 
   private getReadyClient(userId: string): WhatsAppClient {
@@ -729,66 +813,92 @@ export class WhatsAppManager {
     }, WA_MESSAGE_DEDUPE_TTL_MS + 1000);
   }
 
-  async getAvailableChats(userId: string) {
-    const cached = this.cachedChats.get(userId);
-    if (cached && cached.length > 0) return cached;
-
-    const client = this.getReadyClient(userId);
-    let lastMapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
+  private async refreshChatCache(userId: string, client: WhatsAppClient): Promise<ChatSummary[]> {
+    let lastMapped: ChatSummary[] = [];
 
     for (let attempt = 1; attempt <= WA_DISCOVERY_MAX_ATTEMPTS; attempt++) {
-      let mapped: Array<{ id: string; name: string; isGroup: boolean; unreadCount: number }> = [];
-      const attemptTimeoutMs = WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 10000);
+      let lightweightChats: ChatSummary[] = [];
+      let lightweightContacts: ChatSummary[] = [];
+      let hydratedChats: ChatSummary[] = [];
+      let hydratedContacts: ChatSummary[] = [];
 
-      try {
-        mapped = await withTimeout(
+      const lightweightTimeoutMs = Math.min(
+        WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 2000),
+        WA_DISCOVERY_LIGHTWEIGHT_TIMEOUT_MS + ((attempt - 1) * 2000)
+      );
+      const contactTimeoutMs = Math.min(
+        WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 2000),
+        WA_DISCOVERY_CONTACT_TIMEOUT_MS + ((attempt - 1) * 2000)
+      );
+      const hydratedTimeoutMs = Math.min(
+        WA_DISCOVERY_TIMEOUT_MS + ((attempt - 1) * 5000),
+        WA_DISCOVERY_HYDRATED_TIMEOUT_MS + ((attempt - 1) * 5000)
+      );
+
+      const [chatResult, contactResult] = await Promise.allSettled([
+        withTimeout(
           getLightweightChats(client),
-          attemptTimeoutMs,
+          lightweightTimeoutMs,
           'Lightweight chat discovery timed out.'
-        );
-        console.log(`[WhatsApp | ${userId}] Lightweight chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
-      } catch (chatError: any) {
-        console.warn(`[WhatsApp | ${userId}] Lightweight chat discovery failed on attempt ${attempt}:`, chatError?.message || chatError);
+        ),
+        withTimeout(
+          getLightweightContacts(client),
+          contactTimeoutMs,
+          'Contact discovery timed out.'
+        ),
+      ]);
+
+      if (chatResult.status === 'fulfilled') {
+        lightweightChats = chatResult.value;
+        console.log(`[WhatsApp | ${userId}] Lightweight chat discovery returned ${lightweightChats.length} chats on attempt ${attempt}.`);
+      } else {
+        console.warn(`[WhatsApp | ${userId}] Lightweight chat discovery failed on attempt ${attempt}:`, (chatResult.reason as any)?.message || chatResult.reason);
       }
 
-      if (mapped.length === 0) {
-        try {
-          mapped = await withTimeout(
-            getLightweightContacts(client),
-            attemptTimeoutMs,
-            'Contact discovery fallback timed out. Please try again in a few seconds.'
-          );
-          console.log(`[WhatsApp | ${userId}] Contact fallback returned ${mapped.length} contacts on attempt ${attempt}.`);
-        } catch (contactError: any) {
-          console.warn(`[WhatsApp | ${userId}] Contact fallback failed on attempt ${attempt}:`, contactError?.message || contactError);
-        }
+      if (contactResult.status === 'fulfilled') {
+        lightweightContacts = contactResult.value;
+        console.log(`[WhatsApp | ${userId}] Contact discovery returned ${lightweightContacts.length} contacts on attempt ${attempt}.`);
+      } else {
+        console.warn(`[WhatsApp | ${userId}] Contact discovery failed on attempt ${attempt}:`, (contactResult.reason as any)?.message || contactResult.reason);
       }
 
-      if (mapped.length === 0) {
-        try {
-          const hydratedChats = await withTimeout(
-            client.getChats(),
-            attemptTimeoutMs,
-            'Hydrated WhatsApp chat discovery timed out.'
-          );
-          mapped = (hydratedChats || [])
-            .map((chat: any) => ({
-              id: chat?.id?._serialized || '',
-              name: chat?.name || chat?.formattedTitle || chat?.id?._serialized || 'Unknown Chat',
-              isGroup: Boolean(chat?.isGroup),
-              unreadCount: Number(chat?.unreadCount || 0),
-            }))
-            .filter((chat: any) => chat.id && !chat.id.includes('status@broadcast'));
-          console.log(`[WhatsApp | ${userId}] Hydrated chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
-        } catch (hydratedError: any) {
-          console.warn(`[WhatsApp | ${userId}] Hydrated chat discovery failed on attempt ${attempt}:`, hydratedError?.message || hydratedError);
-        }
+      let mapped = mergeChatSummaries(lightweightChats, lightweightContacts);
+      if (mapped.length > 0) {
+        this.cachedChats.set(userId, mapped);
+        return mapped;
       }
 
+      const [hydratedChatResult, hydratedContactResult] = await Promise.allSettled([
+        withTimeout(
+          getHydratedChats(client),
+          hydratedTimeoutMs,
+          'Hydrated WhatsApp chat discovery timed out.'
+        ),
+        withTimeout(
+          getHydratedContacts(client),
+          hydratedTimeoutMs,
+          'Hydrated WhatsApp contact discovery timed out.'
+        ),
+      ]);
+
+      if (hydratedChatResult.status === 'fulfilled') {
+        hydratedChats = hydratedChatResult.value;
+        console.log(`[WhatsApp | ${userId}] Hydrated chat discovery returned ${hydratedChats.length} chats on attempt ${attempt}.`);
+      } else {
+        console.warn(`[WhatsApp | ${userId}] Hydrated chat discovery failed on attempt ${attempt}:`, (hydratedChatResult.reason as any)?.message || hydratedChatResult.reason);
+      }
+
+      if (hydratedContactResult.status === 'fulfilled') {
+        hydratedContacts = hydratedContactResult.value;
+        console.log(`[WhatsApp | ${userId}] Hydrated contact discovery returned ${hydratedContacts.length} contacts on attempt ${attempt}.`);
+      } else {
+        console.warn(`[WhatsApp | ${userId}] Hydrated contact discovery failed on attempt ${attempt}:`, (hydratedContactResult.reason as any)?.message || hydratedContactResult.reason);
+      }
+
+      mapped = mergeChatSummaries(lightweightChats, hydratedChats, lightweightContacts, hydratedContacts);
       lastMapped = mapped;
       if (mapped.length > 0) {
         this.cachedChats.set(userId, mapped);
-        console.log(`[WhatsApp | ${userId}] Chat discovery returned ${mapped.length} chats on attempt ${attempt}.`);
         return mapped;
       }
 
@@ -797,26 +907,56 @@ export class WhatsAppManager {
       }
     }
 
+    return lastMapped;
+  }
+
+  async getAvailableChats(userId: string) {
+    const cached = this.cachedChats.get(userId);
+    if (cached && cached.length > 0) return cached;
+
+    const client = this.getReadyClient(userId);
+    const mapped = await this.refreshChatCache(userId, client);
+    if (mapped.length > 0) {
+      console.log(`[WhatsApp | ${userId}] Chat discovery returned ${mapped.length} chats.`);
+      return mapped;
+    }
+
     console.warn(`[WhatsApp | ${userId}] Chat discovery returned no chats after ${WA_DISCOVERY_MAX_ATTEMPTS} attempts.`);
     throw new Error('No WhatsApp chats or contacts were available yet. Open WhatsApp on your phone, wait a few seconds after Ready, then try Configure Sources again.');
   }
 
   async getRecentMessages(userId: string, chatId: string, limit: number = 40): Promise<ChatMessagePreview[]> {
     await this.assertActiveChat(userId, chatId);
-    const client = this.getReadyClient(userId);
-    const chat = await client.getChatById(chatId);
-    const messages = await chat.fetchMessages({ limit: Math.max(1, Math.min(limit, 100)) });
-    const sorted = [...messages].sort((a: any, b: any) => Number(a?.timestamp || 0) - Number(b?.timestamp || 0));
-    return Promise.all(sorted.map((msg: any) => this.mapChatMessage(chatId, msg, client)));
+    try {
+      const client = await this.waitForReadyClient(userId);
+      const chat = await client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: Math.max(1, Math.min(limit, 100)) });
+      const sorted = [...messages].sort((a: any, b: any) => Number(a?.timestamp || 0) - Number(b?.timestamp || 0));
+      return Promise.all(sorted.map((msg: any) => this.mapChatMessage(chatId, msg, client)));
+    } catch (err: any) {
+      if (String(err?.message || '').toLowerCase().includes('detached frame')) {
+        await this.handleConnectionFailure(userId, 'Detached browser frame while loading recent messages.');
+        throw new Error('WhatsApp session was refreshing. Please wait a few seconds and try again.');
+      }
+      throw err;
+    }
   }
 
   async sendMessageToChat(userId: string, chatId: string, text: string): Promise<ChatMessagePreview> {
     const trimmed = String(text || '').trim();
     if (!trimmed) throw new Error('Message text is required.');
     await this.assertActiveChat(userId, chatId);
-    const client = this.getReadyClient(userId);
-    const sent = await client.sendMessage(chatId, trimmed);
-    return this.mapChatMessage(chatId, sent, client);
+    try {
+      const client = await this.waitForReadyClient(userId);
+      const sent = await client.sendMessage(chatId, trimmed);
+      return this.mapChatMessage(chatId, sent, client);
+    } catch (err: any) {
+      if (String(err?.message || '').toLowerCase().includes('detached frame')) {
+        await this.handleConnectionFailure(userId, 'Detached browser frame while sending a message.');
+        throw new Error('WhatsApp session was refreshing. Please wait for reconnection, then retry the message.');
+      }
+      throw err;
+    }
   }
 
   async sendAutomatedReply(userId: string, chatId: string, text: string): Promise<void> {
@@ -909,23 +1049,33 @@ export class WhatsAppManager {
   }
 
   async backfillChat(userId: string, chatId: string, lookbackMinutes: number = 120): Promise<{ processed: number; skipped: number; errors: number }> {
-    const client = this.getReadyClient(userId);
-    const chat = await client.getChatById(chatId);
-    const messages = await chat.fetchMessages({ limit: 2000 });
-    const cutoffTs = (Date.now() / 1000) - (lookbackMinutes * 60);
+    try {
+      const client = await this.waitForReadyClient(userId);
+      const chat = await client.getChatById(chatId);
+      const messages = await chat.fetchMessages({ limit: 2000 });
+      const cutoffTs = (Date.now() / 1000) - (lookbackMinutes * 60);
 
-    let processed = 0, skipped = 0, errors = 0;
-    for (const msg of messages) {
-      if (Number(msg.timestamp) < cutoffTs) continue;
-      try {
-        const outcome = await this.handleIncomingMessage(userId, msg, client);
-        if (outcome === 'captured') processed++;
-        else if (outcome === 'skipped') skipped++;
-        else errors++;
-      } catch { errors++; }
+      let processed = 0, skipped = 0, errors = 0;
+      for (const msg of messages) {
+        if (Number(msg.timestamp) < cutoffTs) continue;
+        try {
+          const outcome = await this.handleIncomingMessage(userId, msg, client);
+          if (outcome === 'captured') processed++;
+          else if (outcome === 'skipped') skipped++;
+          else errors++;
+        } catch {
+          errors++;
+        }
+      }
+      this.io.to(userId).emit('backfill_complete', { processed, skipped, errors });
+      return { processed, skipped, errors };
+    } catch (err: any) {
+      if (String(err?.message || '').toLowerCase().includes('detached frame')) {
+        await this.handleConnectionFailure(userId, 'Detached browser frame during backfill.');
+        throw new Error('WhatsApp session refreshed during backfill. Wait for it to reconnect, then run backfill again.');
+      }
+      throw err;
     }
-    this.io.to(userId).emit('backfill_complete', { processed, skipped, errors });
-    return { processed, skipped, errors };
   }
 
   private startActiveChatSync(userId: string, client: WhatsAppClient) {
