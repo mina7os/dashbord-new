@@ -846,18 +846,25 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
   api.get('/dashboard/stats', rateLimit(120, 60000, 'dashboard.stats') as any, async (req: any, res) => {
     try {
       const today = new Date().toISOString().split('T')[0];
+      const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const userIds = await fetchScopedUserIds(req.access);
-      const [metricsRes, transactionsRes] = await Promise.all([
+      const [metricsRes, transactionsRes, incomingTodayRes, reviewTodayRes] = await Promise.all([
         req.access.canReadAllData
           ? supabaseAdmin.from('dashboard_metrics').select('*').in('user_id', userIds).eq('date', today)
           : supabaseAdmin.from('dashboard_metrics').select('*').eq('user_id', req.user.id).eq('date', today).maybeSingle(),
         req.access.canReadAllData
           ? supabaseAdmin.from('transactions').select('amount, currency').in('user_id', userIds)
           : supabaseAdmin.from('transactions').select('amount, currency').eq('user_id', req.user.id),
+        req.access.canReadAllData
+          ? supabaseAdmin.from('incoming_messages').select('processing_status,created_at').in('user_id', userIds).gte('created_at', today).lt('created_at', tomorrow)
+          : supabaseAdmin.from('incoming_messages').select('processing_status,created_at').eq('user_id', req.user.id).gte('created_at', today).lt('created_at', tomorrow),
+        req.access.canReadAllData
+          ? supabaseAdmin.from('review_queue').select('review_status,created_at').in('user_id', userIds).gte('created_at', today).lt('created_at', tomorrow)
+          : supabaseAdmin.from('review_queue').select('review_status,created_at').eq('user_id', req.user.id).gte('created_at', today).lt('created_at', tomorrow),
       ]);
 
       const blankStats = { total_messages: 0, financial_candidates: 0, successful_extractions: 0, pending_review: 0, duplicates: 0 };
-      const stats = Array.isArray(metricsRes.data)
+      const metricStats = Array.isArray(metricsRes.data)
         ? metricsRes.data.reduce((acc: any, row: any) => ({
             total_messages: acc.total_messages + (Number(row.total_messages) || 0),
             financial_candidates: acc.financial_candidates + (Number(row.financial_candidates) || 0),
@@ -866,6 +873,25 @@ function registerDashboardRoutes(api: express.Router, deps: ServerDependencies) 
             duplicates: acc.duplicates + (Number(row.duplicates) || 0),
           }), blankStats)
         : (metricsRes.data || blankStats);
+      const incomingToday = Array.isArray(incomingTodayRes.data) ? incomingTodayRes.data : [];
+      const reviewToday = Array.isArray(reviewTodayRes.data) ? reviewTodayRes.data : [];
+      const derivedStats = {
+        total_messages: incomingToday.length,
+        financial_candidates: incomingToday.filter((row: any) => {
+          const status = String(row.processing_status || '');
+          return status !== 'completed_non_transaction';
+        }).length,
+        successful_extractions: incomingToday.filter((row: any) => String(row.processing_status || '') === 'completed_transaction').length,
+        pending_review: reviewToday.filter((row: any) => String(row.review_status || 'pending') === 'pending').length,
+        duplicates: incomingToday.filter((row: any) => String(row.processing_status || '') === 'completed_duplicate').length,
+      };
+      const stats = {
+        total_messages: Math.max(Number(metricStats.total_messages) || 0, derivedStats.total_messages),
+        financial_candidates: Math.max(Number(metricStats.financial_candidates) || 0, derivedStats.financial_candidates),
+        successful_extractions: Math.max(Number(metricStats.successful_extractions) || 0, derivedStats.successful_extractions),
+        pending_review: Math.max(Number(metricStats.pending_review) || 0, derivedStats.pending_review),
+        duplicates: Math.max(Number(metricStats.duplicates) || 0, derivedStats.duplicates),
+      };
       const totals = { egp_total: 0, usd_total: 0 };
       transactionsRes.data?.forEach((tx: any) => {
         const amt = Number(tx.amount) || 0;
