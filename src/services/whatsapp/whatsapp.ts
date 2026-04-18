@@ -184,6 +184,49 @@ function execFileAsync(file: string, args: string[]): Promise<void> {
   });
 }
 
+function chatIdToBareNumber(chatId: string): string {
+  return String(chatId || '').replace(/@(?:c|g)\.us$/i, '').trim();
+}
+
+function normalizeChatLabel(value: string): string {
+  return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function isPhoneLikeLabel(value: string): boolean {
+  const normalized = String(value || '').replace(/[^\d+]/g, '');
+  const digitsOnly = normalized.replace(/\D/g, '');
+  return digitsOnly.length >= 7 && normalized.length <= 20;
+}
+
+function isWeakChatName(name: string, chatId: string): boolean {
+  const normalized = normalizeChatLabel(name);
+  if (!normalized) return true;
+
+  const bareNumber = normalizeChatLabel(chatIdToBareNumber(chatId));
+  if (normalized === normalizeChatLabel(chatId) || normalized === bareNumber) return true;
+  if (normalized === 'unknown contact' || normalized === 'unknown chat' || normalized === 'known source' || normalized === 'recent whatsapp chat') {
+    return true;
+  }
+
+  return isPhoneLikeLabel(normalized);
+}
+
+function pickPreferredChatName(chatId: string, leftName: string, rightName: string): string {
+  const left = String(leftName || '').trim();
+  const right = String(rightName || '').trim();
+  if (!left) return right;
+  if (!right) return left;
+
+  const leftWeak = isWeakChatName(left, chatId);
+  const rightWeak = isWeakChatName(right, chatId);
+  if (leftWeak !== rightWeak) {
+    return leftWeak ? right : left;
+  }
+
+  // When both names are equally "strong", prefer the more descriptive label.
+  return right.length > left.length ? right : left;
+}
+
 function mergeChatSummaries(...sources: ChatSummary[][]): ChatSummary[] {
   const merged = new Map<string, ChatSummary>();
 
@@ -199,7 +242,7 @@ function mergeChatSummaries(...sources: ChatSummary[][]): ChatSummary[] {
 
       merged.set(item.id, {
         id: item.id,
-        name: existing.name && existing.name !== existing.id ? existing.name : item.name,
+        name: pickPreferredChatName(item.id, existing.name, item.name),
         isGroup: existing.isGroup || item.isGroup,
         unreadCount: Math.max(existing.unreadCount || 0, item.unreadCount || 0),
       });
@@ -251,12 +294,10 @@ async function getDatabaseBackedChats(userId: string): Promise<ChatSummary[]> {
     }))
     .filter((row) => row.id);
 
-  const seen = new Set(fromConnections.map((row) => row.id));
   const fromIncoming: ChatSummary[] = [];
   for (const row of incomingMessages) {
     const chatId = String((row as any).chat_id || '').trim();
-    if (!chatId || seen.has(chatId)) continue;
-    seen.add(chatId);
+    if (!chatId) continue;
     fromIncoming.push({
       id: chatId,
       name: String((row as any).sender_name || chatId || 'Recent WhatsApp Chat').trim(),
@@ -296,9 +337,12 @@ async function getLightweightContacts(client: WhatsAppClient): Promise<Array<{ i
           const id = contact?.id?._serialized || '';
           const name =
             contact?.formattedName ||
+            contact?.verifiedName ||
+            contact?.notify ||
             contact?.pushname ||
             contact?.name ||
             contact?.shortName ||
+            contact?.businessProfile?.name ||
             id ||
             'Unknown Contact';
           return {
@@ -328,6 +372,9 @@ async function getHydratedContacts(client: WhatsAppClient): Promise<ChatSummary[
         contact?.pushname ||
         contact?.name ||
         contact?.shortName ||
+        contact?.verifiedName ||
+        contact?.notify ||
+        contact?.businessProfile?.name ||
         contact?.number ||
         contact?.formattedName ||
         contact?.id?._serialized ||
