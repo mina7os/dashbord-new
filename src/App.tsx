@@ -1041,11 +1041,25 @@ export default function App() {
       lastWhatsappStatusRef.current = state.status;
     });
 
+    socket.on('whatsapp_message_received', (event: any) => {
+      console.log('[Socket] WhatsApp message received:', event);
+      void loadData(false);
+    });
+
+    socket.on('backfill_complete', (result: any) => {
+      console.log('[Socket] Backfill complete:', result);
+      addToast(
+        `Backfill complete: ${Number(result?.processed || 0)} processed, ${Number(result?.skipped || 0)} skipped, ${Number(result?.errors || 0)} errors.`,
+        Number(result?.errors || 0) > 0 ? 'info' : 'success'
+      );
+      void loadData(false);
+    });
+
     return () => {
       socket.close();
       if (socketRef.current === socket) socketRef.current = null;
     };
-  }, [session, access?.canUseIntegrations, addToast]);
+  }, [session, access?.canUseIntegrations, addToast, loadData]);
 
   useEffect(() => {
     if (!session || !access?.canUseIntegrations) return;
