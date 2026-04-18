@@ -28,8 +28,8 @@ const WA_RECONNECT_BASE_DELAY_MS = Math.max(2000, Number(process.env.WA_RECONNEC
 const WA_RECONNECT_MAX_DELAY_MS = Math.max(WA_RECONNECT_BASE_DELAY_MS, Number(process.env.WA_RECONNECT_MAX_DELAY_MS || 60000));
 const WA_LOADING_TIMEOUT_MS = Math.max(120000, Number(process.env.WA_LOADING_TIMEOUT_MS || 180000));
 const WA_AUTHENTICATED_TIMEOUT_MS = Math.max(60000, Number(process.env.WA_AUTHENTICATED_TIMEOUT_MS || 90000));
-const WA_AUTO_RESTORE_LOOKBACK_DAYS = Math.max(1, Number(process.env.WA_AUTO_RESTORE_LOOKBACK_DAYS || 30));
-const WA_AUTO_RESTORE_MAX_SESSIONS = Math.max(1, Number(process.env.WA_AUTO_RESTORE_MAX_SESSIONS || 2));
+const WA_AUTO_RESTORE_LOOKBACK_DAYS = Math.max(1, Number(process.env.WA_AUTO_RESTORE_LOOKBACK_DAYS || 7));
+const WA_AUTO_RESTORE_MAX_SESSIONS = Math.max(1, Number(process.env.WA_AUTO_RESTORE_MAX_SESSIONS || 1));
 const WA_AUTO_RESTORE_START_DELAY_MS = Math.max(1000, Number(process.env.WA_AUTO_RESTORE_START_DELAY_MS || 15000));
 const WA_ACTIVE_CHAT_SYNC_INTERVAL_MS = Number(process.env.WA_ACTIVE_CHAT_SYNC_INTERVAL_MS || 20000);
 const WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT = Number(process.env.WA_ACTIVE_CHAT_SYNC_MESSAGE_LIMIT || 8);
@@ -581,7 +581,8 @@ export class WhatsAppManager {
     for (const row of Array.isArray(connectedChatsRes.data) ? connectedChatsRes.data : []) {
       const userId = String((row as any).user_id || '').trim();
       if (!userId) continue;
-      const next = (scores.get(userId) || 0) + ((row as any).is_active ? 100 : 25);
+      if (!(row as any).is_active) continue;
+      const next = (scores.get(userId) || 0) + 100;
       scores.set(userId, next);
     }
 
